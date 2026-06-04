@@ -154,6 +154,10 @@ impl Drop for HookGuard {
     }
 }
 
+// IL2CPP runs single-threaded — HookGuard is never shared between threads.
+unsafe impl Send for HookGuard {}
+unsafe impl Sync for HookGuard {}
+
 // ── try_unhook ───────────────────────────────────────────────────────────
 
 /// Best-effort unhook that never panics (safe to use from Drop).

@@ -85,3 +85,27 @@ pub use value_type::{Args, Il2CppValueType};
 
 #[cfg(target_os = "android")]
 pub use hook::HookGuard;
+
+/// Desktop stub — allows `cargo check` on non-Android platforms.
+/// Hooks are no-ops and will fail gracefully at runtime.
+#[cfg(not(target_os = "android"))]
+pub struct HookGuard;
+
+#[cfg(not(target_os = "android"))]
+impl HookGuard {
+    pub fn install(_target: *const std::ffi::c_void, _replace: *const std::ffi::c_void) -> crate::Result<Self> {
+        log::warn!("HookGuard::install called on non-Android platform — skipping");
+        Ok(Self)
+    }
+    pub fn trampoline(&self) -> *const std::ffi::c_void {
+        std::ptr::null()
+    }
+    pub fn uninstall(self) -> crate::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+unsafe impl Send for HookGuard {}
+#[cfg(not(target_os = "android"))]
+unsafe impl Sync for HookGuard {}

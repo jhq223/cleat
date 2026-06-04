@@ -128,6 +128,7 @@ impl<T: Copy + 'static> Il2CppList<T> {
 /// * `String::try_from(...)` — fallible conversion that returns an error on
 ///   null or malformed UTF-16.
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct Il2CppString {
     pub(crate) ptr: *mut bridge::structs::Il2cppString,
 }
@@ -202,6 +203,13 @@ impl fmt::Display for Il2CppString {
 impl Debug for Il2CppString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self, f)
+    }
+}
+
+/// Null default — the hook wrapper uses this on error.
+impl Default for Il2CppString {
+    fn default() -> Self {
+        Self { ptr: std::ptr::null_mut() }
     }
 }
 

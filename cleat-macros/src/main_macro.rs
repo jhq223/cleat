@@ -12,8 +12,8 @@ pub fn main_macro(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = quote! {
         #input_fn
 
-        #[no_mangle]
-        pub extern "C" fn load() {
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn load() {
             cleat::init("libil2cpp.so", move || {
                 // Catch panics before they cross the FFI boundary — Rust
                 // panicking into C is UB.

@@ -126,7 +126,7 @@ pub fn hook_macro(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // ── inspect user function signature ──
 
-    let fn_name    = &input_fn.sig.ident;
+    let fn_name    = input_fn.sig.ident.clone();
     let inner_name = format_ident!("{}_inner", fn_name);
     let mod_name   = fn_name.clone();
     let fn_body    = &input_fn.block;
@@ -160,8 +160,9 @@ pub fn hook_macro(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    // The user's original signature, kept as-is for the inner fn.
-    let inner_sig = &input_fn.sig;
+    // The user's original signature, renamed to _inner.
+    let mut inner_sig = input_fn.sig.clone();
+    inner_sig.ident = inner_name.clone();
 
     // ── build codegen fragments ──
 
@@ -194,36 +195,36 @@ pub fn hook_macro(attr: TokenStream, item: TokenStream) -> TokenStream {
     let trampoline_type: TokenStream2 = if has_this {
         if has_ret {
             if param_types.is_empty() {
-                quote! { extern "C" fn(*mut cleat::Il2CppObject) -> #ret_ty }
+                quote! { unsafe extern "C" fn(*mut cleat::Il2CppObject) -> #ret_ty }
             } else {
-                quote! { extern "C" fn(*mut cleat::Il2CppObject, #(#param_types),*) -> #ret_ty }
+                quote! { unsafe extern "C" fn(*mut cleat::Il2CppObject, #(#param_types),*) -> #ret_ty }
             }
         } else {
             if param_types.is_empty() {
-                quote! { extern "C" fn(*mut cleat::Il2CppObject) }
+                quote! { unsafe extern "C" fn(*mut cleat::Il2CppObject) }
             } else {
-                quote! { extern "C" fn(*mut cleat::Il2CppObject, #(#param_types),*) }
+                quote! { unsafe extern "C" fn(*mut cleat::Il2CppObject, #(#param_types),*) }
             }
         }
     } else {
         if has_ret {
-            quote! { extern "C" fn(#(#param_types),*) -> #ret_ty }
+            quote! { unsafe extern "C" fn(#(#param_types),*) -> #ret_ty }
         } else {
-            quote! { extern "C" fn(#(#param_types),*) }
+            quote! { unsafe extern "C" fn(#(#param_types),*) }
         }
     };
 
     // How the C wrapper calls super::inner
     let inner_call_args: TokenStream2 = if has_this {
         let deref = if is_this_mut {
-            quote! { &mut * }
+            quote! { unsafe { &mut *this } }
         } else {
-            quote! { &* }
+            quote! { unsafe { &*this } }
         };
         if param_idents.is_empty() {
-            quote! { super::#inner_name(#deref this) }
+            quote! { super::#inner_name(#deref) }
         } else {
-            quote! { super::#inner_name(#deref this, #(#param_idents),*) }
+            quote! { super::#inner_name(#deref, #(#param_idents),*) }
         }
     } else {
         quote! { super::#inner_name(#(#param_idents),*) }
@@ -283,14 +284,14 @@ pub fn hook_macro(attr: TokenStream, item: TokenStream) -> TokenStream {
             let guard = HOOK.get().expect("hook not installed");
             let trampoline: #trampoline_type =
                 unsafe { std::mem::transmute(guard.trampoline()) };
-            trampoline(#trampoline_call_args)
+            unsafe { trampoline(#trampoline_call_args) }
         }
     } else {
         quote! {
             let guard = HOOK.get().expect("hook not installed");
             let trampoline: #trampoline_type =
                 unsafe { std::mem::transmute(guard.trampoline()) };
-            trampoline(#trampoline_call_args);
+            unsafe { trampoline(#trampoline_call_args); }
         }
     };
 
@@ -301,6 +302,7 @@ pub fn hook_macro(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         mod #mod_name {
             use std::sync::OnceLock;
+            use cleat::prelude::*;
             use cleat::HookGuard;
 
             static HOOK: OnceLock<HookGuard> = OnceLock::new();
@@ -315,10 +317,12 @@ pub fn hook_macro(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let class  = cleat::Il2CppClass::find_with(#class_lit, #assembly_lit)?;
                 let method = class.method_ptr(#method_lit)?;
 
-                let guard = HookGuard::install(
-                    method.function,
-                    __wrapper as *const (),
-                )?;
+                let guard = unsafe {
+                    HookGuard::install(
+                        method.function,
+                        __wrapper as *const std::ffi::c_void,
+                    )?
+                };
 
                 HOOK.set(guard)
                     .map_err(|_| cleat::Error::Hook("already installed".into()))
@@ -326,7 +330,12 @@ pub fn hook_macro(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             /// Remove the hook and restore the original code.
             pub fn uninstall() -> cleat::Result<()> {
-                HOOK.take()
+                // Safety: IL2CPP runs single-threaded — no concurrent mutation.
+                let taken = unsafe {
+                    let ptr = &raw const HOOK as *mut OnceLock<HookGuard>;
+                    (*ptr).take()
+                };
+                taken
                     .map(|g| g.uninstall())
                     .unwrap_or(Ok(()))
             }
@@ -339,7 +348,7 @@ pub fn hook_macro(attr: TokenStream, item: TokenStream) -> TokenStream {
             /// C callback. Signature must match the hooked method exactly —
             /// ShadowHook transfers control here when the game calls the
             /// patched function.
-            extern "C" fn __wrapper(#wrapper_params_c) #wrapper_ret {
+            unsafe extern "C" fn __wrapper(#wrapper_params_c) #wrapper_ret {
                 #wrapper_body
             }
         }

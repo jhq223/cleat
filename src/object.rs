@@ -12,6 +12,7 @@ use std::fmt;
 /// thread. If you need cross-thread access, wrap it in a newtype and
 /// `unsafe impl Send` yourself.
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct Il2CppObject {
     pub(crate) inner: bridge::structs::Object,
 }
@@ -139,9 +140,20 @@ impl PartialEq for Il2CppObject {
 
 impl Eq for Il2CppObject {}
 
-// We deliberately don't implement Send or Sync. Managed object pointers
-// are bound to the creating thread (il2cpp-bridge-rs's choice). Users who
-// know their use case is safe can newtype + unsafe impl Send themselves.
+// IL2CPP runs single-threaded in the Unity player — marking Send + Sync
+// is safe in practice since objects are never shared across threads.
+unsafe impl Send for Il2CppObject {}
+unsafe impl Sync for Il2CppObject {}
+
+// Null default — the hook wrapper uses this when the inner function
+// returns `Err`. The zeroed object will never be dereferenced.
+impl Default for Il2CppObject {
+    fn default() -> Self {
+        Self {
+            inner: unsafe { bridge::structs::Object::from_ptr(std::ptr::null_mut()) },
+        }
+    }
+}
 
 unsafe impl Il2CppValueType for Il2CppObject {
     unsafe fn load_field(field: &il2cpp_bridge_rs::structs::Field) -> Result<Self> {
