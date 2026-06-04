@@ -1,0 +1,18 @@
+[package]
+name = "cleat-macros"
+version = "0.1.0"
+edition = "2024"
+description = "Proc macros for cleat — Android IL2CPP game modding toolkit"
+authors = ["jhq223 <jhq223@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/jhq223/cleat"
+keywords = ["android", "il2cpp", "proc-macro"]
+categories = ["game-development", "development-tools::ffi"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
