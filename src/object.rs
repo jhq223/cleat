@@ -84,6 +84,14 @@ impl Il2CppObject {
         method.invoke_void(args)
     }
 
+    /// Call a void method with raw pointers — for when Args trait
+    /// would pass the wrong pointer (e.g. Il2CppObject gets stack
+    /// address of wrapper instead of GC object pointer).
+    pub fn invoke_raw_void(&self, name: &str, args: &[*mut c_void]) -> Result<()> {
+        let method = self.method(name)?;
+        unsafe { method.inner.call::<()>(args).map_err(Error::Bridge) }
+    }
+
     /// Get a method handle, useful when you need to specialise a generic
     /// method before calling it.
     ///

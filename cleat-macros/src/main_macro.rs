@@ -1,5 +1,5 @@
-//! `#[cleat::main]` — generates the `load()` entry point that Android calls
-//! via `System.loadLibrary`.
+//! `#[cleat::main]` — generates the JNI_OnLoad entry point that Android
+//! calls via `System.loadLibrary`.
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -13,7 +13,10 @@ pub fn main_macro(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #input_fn
 
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn load() {
+        pub unsafe extern "C" fn JNI_OnLoad(
+            _vm: *mut ::std::ffi::c_void,
+            _reserved: *mut ::std::ffi::c_void,
+        ) -> ::std::ffi::c_int {
             cleat::init("libil2cpp.so", move || {
                 // Catch panics before they cross the FFI boundary — Rust
                 // panicking into C is UB.
@@ -33,6 +36,7 @@ pub fn main_macro(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 }
             });
+            0x0001_0006u32 as ::std::ffi::c_int // JNI_VERSION_1_6
         }
     };
 

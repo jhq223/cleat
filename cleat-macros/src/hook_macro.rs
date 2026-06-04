@@ -173,12 +173,20 @@ pub fn hook_macro(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    // C wrapper parameter list
+    // C wrapper parameter list.
+    //
+    // `this` is received **by value** as `cleat::Il2CppObject` because:
+    //  - at the C ABI level it's `Il2CppObject*` (a single 8-byte pointer)
+    //  - `cleat::Il2CppObject` is `#[repr(transparent)]` over that pointer,
+    //    so the bytes land correctly in the struct without needing `&*`.
+    // Using `*mut cleat::Il2CppObject` would cause `&*this` to read the
+    // *first field* (klass) of the managed object instead of the object
+    // pointer itself.
     let wrapper_params_c: TokenStream2 = if has_this {
         if param_idents.is_empty() {
-            quote! { this: *mut cleat::Il2CppObject }
+            quote! { this: cleat::Il2CppObject }
         } else {
-            quote! { this: *mut cleat::Il2CppObject, #(#param_idents: #param_types),* }
+            quote! { this: cleat::Il2CppObject, #(#param_idents: #param_types),* }
         }
     } else {
         quote! { #(#param_idents: #param_types),* }
@@ -195,15 +203,15 @@ pub fn hook_macro(attr: TokenStream, item: TokenStream) -> TokenStream {
     let trampoline_type: TokenStream2 = if has_this {
         if has_ret {
             if param_types.is_empty() {
-                quote! { unsafe extern "C" fn(*mut cleat::Il2CppObject) -> #ret_ty }
+                quote! { unsafe extern "C" fn(cleat::Il2CppObject) -> #ret_ty }
             } else {
-                quote! { unsafe extern "C" fn(*mut cleat::Il2CppObject, #(#param_types),*) -> #ret_ty }
+                quote! { unsafe extern "C" fn(cleat::Il2CppObject, #(#param_types),*) -> #ret_ty }
             }
         } else {
             if param_types.is_empty() {
-                quote! { unsafe extern "C" fn(*mut cleat::Il2CppObject) }
+                quote! { unsafe extern "C" fn(cleat::Il2CppObject) }
             } else {
-                quote! { unsafe extern "C" fn(*mut cleat::Il2CppObject, #(#param_types),*) }
+                quote! { unsafe extern "C" fn(cleat::Il2CppObject, #(#param_types),*) }
             }
         }
     } else {
@@ -214,12 +222,13 @@ pub fn hook_macro(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    // How the C wrapper calls super::inner
+    // How the C wrapper calls super::inner.
+    // `this` is `cleat::Il2CppObject` by value — just borrow it directly.
     let inner_call_args: TokenStream2 = if has_this {
         let deref = if is_this_mut {
-            quote! { unsafe { &mut *this } }
+            quote! { &mut this }
         } else {
-            quote! { unsafe { &*this } }
+            quote! { &this }
         };
         if param_idents.is_empty() {
             quote! { super::#inner_name(#deref) }
@@ -248,12 +257,13 @@ pub fn hook_macro(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {}
     };
 
-    // How original() calls through the trampoline
+    // How original() calls through the trampoline.
+    // `original()` receives `this: &Il2CppObject` — deref & pass by value.
     let trampoline_call_args: TokenStream2 = if has_this {
         if param_idents.is_empty() {
-            quote! { this.raw_ptr() as *mut _ }
+            quote! { *this }
         } else {
-            quote! { this.raw_ptr() as *mut _, #(#param_idents),* }
+            quote! { *this, #(#param_idents),* }
         }
     } else {
         quote! { #(#param_idents),* }

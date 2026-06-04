@@ -58,6 +58,9 @@
 // Re-export proc macros so users only need `use cleat::prelude::*`.
 pub use cleat_macros::*;
 
+use std::ffi::{c_void, CString};
+use il2cpp_bridge_rs as bridge;
+
 // Internal modules.
 mod class;
 mod error;
@@ -82,6 +85,55 @@ pub use method::MethodInfo;
 pub use object::Il2CppObject;
 pub use types::{Il2CppArray, Il2CppList, Il2CppString};
 pub use value_type::{Args, Il2CppValueType};
+
+/// Resolve an IL2CPP internal call (iCall) by its fully qualified name.
+///
+/// iCall names follow the format `"Assembly.Class::Method(args)"`.
+/// Use when managed method lookup fails for `[NativeHeader]` / `extern`
+/// methods (e.g. Unity AssetBundle loading APIs).
+///
+/// Returns the raw native function pointer.
+pub fn resolve_icall(name: &str) -> Result<*mut std::ffi::c_void> {
+    let c_name = CString::new(name)
+        .map_err(|_| Error::Bridge("iCall name contains null byte".into()))?;
+    let ptr = unsafe { bridge::api::resolve_icall(c_name.as_ptr()) };
+    if ptr.is_null() {
+        return Err(Error::Bridge(format!("iCall not found: {name}")));
+    }
+    Ok(ptr)
+}
+
+macro_rules! icall_arity {
+    (0, $name:ident,) => {
+        /// # Safety
+        ///
+        /// `fn_ptr` must be a valid function pointer obtained from
+        /// [`resolve_icall`] with a matching signature.
+        pub unsafe fn $name(fn_ptr: *mut c_void) -> *mut c_void {
+            let f: extern "C" fn() -> *mut c_void = unsafe { std::mem::transmute(fn_ptr) };
+            f()
+        }
+    };
+}
+
+macro_rules! icall_arity_n {
+    ($name:ident, $($pn:ident : $pt:ty),+) => {
+        /// # Safety
+        ///
+        /// `fn_ptr` must be a valid function pointer obtained from
+        /// [`resolve_icall`] with a matching signature.
+        pub unsafe fn $name(fn_ptr: *mut c_void, $($pn: $pt),+) -> *mut c_void {
+            let f: extern "C" fn($($pt),+) -> *mut c_void =
+                unsafe { std::mem::transmute(fn_ptr) };
+            f($($pn),+)
+        }
+    };
+}
+
+icall_arity!(0, invoke_icall_0,);
+icall_arity_n!(invoke_icall_1, a: *mut c_void);
+icall_arity_n!(invoke_icall_2, a: *mut c_void, b: *mut c_void);
+icall_arity_n!(invoke_icall_3, a: *mut c_void, b: *mut c_void, c: *mut c_void);
 
 #[cfg(target_os = "android")]
 pub use hook::HookGuard;

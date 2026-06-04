@@ -168,6 +168,11 @@ impl Il2CppString {
         Self { ptr }
     }
 
+    /// Returns the raw IL2CPP string pointer (for use with iCalls).
+    pub fn as_ptr(&self) -> *mut c_void {
+        self.ptr as *mut c_void
+    }
+
     /// Read the string contents into a Rust `String`.
     ///
     /// Never panics. Returns `"<null>"` if the pointer is dead, or
@@ -251,6 +256,20 @@ impl<T: Copy + 'static> Il2CppArray<T> {
             ));
         }
         Ok(Self { ptr })
+    }
+
+    /// Wrap an existing raw IL2CPP array pointer.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be a valid pointer to a managed `T[]` array.
+    pub unsafe fn from_raw(ptr: *mut c_void) -> Self {
+        Self { ptr: ptr as *mut bridge::structs::collections::Il2cppArray<T> }
+    }
+
+    /// Returns the raw array pointer (for use with iCalls).
+    pub fn as_ptr(&self) -> *mut c_void {
+        self.ptr as *mut c_void
     }
 
     /// Read element at `index`. No bounds check — out-of-bounds access is
