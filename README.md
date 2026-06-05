@@ -36,7 +36,7 @@ fn god_mode(this: &Il2CppObject, damage: i32) -> cleat::Result<()> {
 crate-type = ["cdylib"]
 
 [dependencies]
-cleat = { git = "https://github.com/jhq223/cleat" }
+cleat = "0.1"
 ```
 
 ```rust

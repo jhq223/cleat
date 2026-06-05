@@ -11,21 +11,23 @@ use std::sync::{Once, OnceLock};
 
 // ── Function pointer types for each ShadowHook API ──
 
-type ShInitFn       = unsafe extern "C" fn(mode: u32, debuggable: bool) -> i32;
-type ShHookFn       = unsafe extern "C" fn(target: *const c_void,
-                                           new_addr: *const c_void,
-                                           orig_addr: *mut *const c_void) -> *mut c_void;
-type ShUnhookFn     = unsafe extern "C" fn(stub: *mut c_void) -> i32;
-type ShGetErrnoFn   = unsafe extern "C" fn() -> i32;
-type ShToErrmsgFn   = unsafe extern "C" fn(err_num: i32) -> *const c_char;
+type ShInitFn = unsafe extern "C" fn(mode: u32, debuggable: bool) -> i32;
+type ShHookFn = unsafe extern "C" fn(
+    target: *const c_void,
+    new_addr: *const c_void,
+    orig_addr: *mut *const c_void,
+) -> *mut c_void;
+type ShUnhookFn = unsafe extern "C" fn(stub: *mut c_void) -> i32;
+type ShGetErrnoFn = unsafe extern "C" fn() -> i32;
+type ShToErrmsgFn = unsafe extern "C" fn(err_num: i32) -> *const c_char;
 
 /// Resolved ShadowHook API entry points. Initialised lazily on first use.
 struct ShadowHookAPI {
-    init:           ShInitFn,
+    init: ShInitFn,
     hook_func_addr: ShHookFn,
-    unhook:         ShUnhookFn,
-    get_errno:      ShGetErrnoFn,
-    to_errmsg:      ShToErrmsgFn,
+    unhook: ShUnhookFn,
+    get_errno: ShGetErrnoFn,
+    to_errmsg: ShToErrmsgFn,
 }
 
 /// OnceLock doesn't have an infallible `try` variant on stable, so we wrap
@@ -59,11 +61,11 @@ fn resolve_shadowhook() -> Option<&'static ShadowHookAPI> {
 
         Some(unsafe {
             ShadowHookAPI {
-                init:           std::mem::transmute(dlsym!("shadowhook_init")),
+                init: std::mem::transmute(dlsym!("shadowhook_init")),
                 hook_func_addr: std::mem::transmute(dlsym!("shadowhook_hook_func_addr")),
-                unhook:         std::mem::transmute(dlsym!("shadowhook_unhook")),
-                get_errno:      std::mem::transmute(dlsym!("shadowhook_get_errno")),
-                to_errmsg:      std::mem::transmute(dlsym!("shadowhook_to_errmsg")),
+                unhook: std::mem::transmute(dlsym!("shadowhook_unhook")),
+                get_errno: std::mem::transmute(dlsym!("shadowhook_get_errno")),
+                to_errmsg: std::mem::transmute(dlsym!("shadowhook_to_errmsg")),
             }
         })
     })
@@ -96,7 +98,7 @@ fn ensure_init() {
 /// that lets `original()` call the real function after patching.
 #[doc(hidden)]
 pub struct HookGuard {
-    stub:     *mut c_void,
+    stub: *mut c_void,
     original: *const c_void,
 }
 
@@ -139,7 +141,7 @@ impl HookGuard {
             return Ok(());
         };
         let stub = self.stub;
-        std::mem::forget(self);          // don't let Drop try again
+        std::mem::forget(self); // don't let Drop try again
         let ret = unsafe { (api.unhook)(stub) };
         if ret != 0 {
             return Err(Error::Hook(format!("shadowhook_unhook failed: {ret}")));

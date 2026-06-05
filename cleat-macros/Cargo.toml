@@ -6,6 +6,7 @@ description = "Proc macros for cleat — Android IL2CPP game modding toolkit"
 authors = ["jhq223 <jhq223@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/jhq223/cleat"
+readme = "../README.md"
 keywords = ["android", "il2cpp", "proc-macro"]
 categories = ["game-development", "development-tools::ffi"]
 

@@ -36,11 +36,7 @@ pub struct Il2CppList<T: Copy> {
 
 unsafe impl<T: Copy + 'static> Il2CppValueType for Il2CppList<T> {
     unsafe fn load_field(field: &il2cpp_bridge_rs::structs::Field) -> Result<Self> {
-        let ptr = unsafe {
-            field
-                .get_value::<*mut c_void>()
-                .map_err(Error::Bridge)?
-        };
+        let ptr = unsafe { field.get_value::<*mut c_void>().map_err(Error::Bridge)? };
         Ok(unsafe { std::ptr::read(ptr as *const Self) })
     }
 
@@ -57,11 +53,7 @@ unsafe impl<T: Copy + 'static> Il2CppValueType for Il2CppList<T> {
         method: &il2cpp_bridge_rs::structs::Method,
         args: &[*mut std::ffi::c_void],
     ) -> Result<Self> {
-        let ptr = unsafe {
-            method
-                .call::<*mut c_void>(args)
-                .map_err(Error::Bridge)?
-        };
+        let ptr = unsafe { method.call::<*mut c_void>(args).map_err(Error::Bridge)? };
         Ok(unsafe { std::ptr::read(ptr as *const Self) })
     }
 }
@@ -214,7 +206,9 @@ impl Debug for Il2CppString {
 /// Null default — the hook wrapper uses this on error.
 impl Default for Il2CppString {
     fn default() -> Self {
-        Self { ptr: std::ptr::null_mut() }
+        Self {
+            ptr: std::ptr::null_mut(),
+        }
     }
 }
 
@@ -248,8 +242,7 @@ impl<T: Copy + 'static> Il2CppArray<T> {
     ///
     /// Returns an error if allocation fails (e.g. IL2CPP not initialised).
     pub fn new(element_class: &Il2CppClass, size: usize) -> Result<Self> {
-        let ptr =
-            bridge::structs::collections::Il2cppArray::<T>::new(&element_class.inner, size);
+        let ptr = bridge::structs::collections::Il2cppArray::<T>::new(&element_class.inner, size);
         if ptr.is_null() {
             return Err(Error::Bridge(
                 "Il2cppArray::new returned null — is IL2CPP initialized?".into(),
@@ -264,7 +257,9 @@ impl<T: Copy + 'static> Il2CppArray<T> {
     ///
     /// `ptr` must be a valid pointer to a managed `T[]` array.
     pub unsafe fn from_raw(ptr: *mut c_void) -> Self {
-        Self { ptr: ptr as *mut bridge::structs::collections::Il2cppArray<T> }
+        Self {
+            ptr: ptr as *mut bridge::structs::collections::Il2cppArray<T>,
+        }
     }
 
     /// Returns the raw array pointer (for use with iCalls).

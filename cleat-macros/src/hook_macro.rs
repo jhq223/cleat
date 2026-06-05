@@ -310,7 +310,7 @@ pub fn hook_macro(attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = quote! {
         #inner_fn
 
-        mod #mod_name {
+        pub(crate) mod #mod_name {
             use std::sync::OnceLock;
             use cleat::prelude::*;
             use cleat::HookGuard;

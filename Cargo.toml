@@ -7,14 +7,15 @@ authors = ["jhq223 <jhq223@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/jhq223/cleat"
 readme = "README.md"
+documentation = "https://docs.rs/cleat"
 keywords = ["android", "il2cpp", "game-modding", "unity", "hooking"]
 categories = ["game-development", "development-tools::ffi"]
 
 [dependencies]
-il2cpp-bridge-rs = { git = "https://github.com/Batchhh/il2cpp-bridge-rs.git" }
+il2cpp-bridge-rs = { git = "https://github.com/Batchhh/il2cpp-bridge-rs.git", version = "0.1" }
 log = "0.4"
 android_logger = "0.14"
 thiserror = "2"
 libc = "0.2"
 
-cleat-macros = { path = "./cleat-macros" }
+cleat-macros = { path = "./cleat-macros", version = "0.1.0" }

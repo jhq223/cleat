@@ -25,8 +25,7 @@ impl MethodInfo {
     ///     .invoke(())?;
     /// ```
     pub fn inflate(&self, type_args: &[&Il2CppClass]) -> Result<Self> {
-        let classes: Vec<&bridge::structs::Class> =
-            type_args.iter().map(|c| &c.inner).collect();
+        let classes: Vec<&bridge::structs::Class> = type_args.iter().map(|c| &c.inner).collect();
 
         let mut inflated = self.inner.inflate(&classes).map_err(Error::Bridge)?;
 

@@ -41,7 +41,7 @@
 //! crate-type = ["cdylib"]
 //!
 //! [dependencies]
-//! cleat = { git = "https://github.com/jhq223/cleat" }
+//! cleat = "0.1"
 //! ```
 //!
 //! ```bash
@@ -58,8 +58,8 @@
 // Re-export proc macros so users only need `use cleat::prelude::*`.
 pub use cleat_macros::*;
 
-use std::ffi::{c_void, CString};
 use il2cpp_bridge_rs as bridge;
+use std::ffi::{CString, c_void};
 
 // Internal modules.
 mod class;
@@ -80,7 +80,7 @@ pub mod prelude;
 pub use class::Il2CppClass;
 pub use error::{Error, Result};
 pub use init::{app_data, init, set_app_data};
-pub use math::{Quaternion, Vector3};
+pub use math::{Quaternion, Vector2, Vector3, Vector4};
 pub use method::MethodInfo;
 pub use object::Il2CppObject;
 pub use types::{Il2CppArray, Il2CppList, Il2CppString};
@@ -94,8 +94,8 @@ pub use value_type::{Args, Il2CppValueType};
 ///
 /// Returns the raw native function pointer.
 pub fn resolve_icall(name: &str) -> Result<*mut std::ffi::c_void> {
-    let c_name = CString::new(name)
-        .map_err(|_| Error::Bridge("iCall name contains null byte".into()))?;
+    let c_name =
+        CString::new(name).map_err(|_| Error::Bridge("iCall name contains null byte".into()))?;
     let ptr = unsafe { bridge::api::resolve_icall(c_name.as_ptr()) };
     if ptr.is_null() {
         return Err(Error::Bridge(format!("iCall not found: {name}")));
@@ -145,7 +145,10 @@ pub struct HookGuard;
 
 #[cfg(not(target_os = "android"))]
 impl HookGuard {
-    pub fn install(_target: *const std::ffi::c_void, _replace: *const std::ffi::c_void) -> crate::Result<Self> {
+    pub fn install(
+        _target: *const std::ffi::c_void,
+        _replace: *const std::ffi::c_void,
+    ) -> crate::Result<Self> {
         log::warn!("HookGuard::install called on non-Android platform — skipping");
         Ok(Self)
     }
