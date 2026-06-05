@@ -6,7 +6,9 @@ Android IL2CPP 游戏 Modding 工具包。
 
 ## 这是什么
 
-IL2CPP 的 Rust 绑定。字段读写、方法调用、inline hook 封装成安全 API，unsafe 不暴露到用户代码。
+IL2CPP 的 Rust 绑定。提供**类型安全**的字段读写、方法调用、inline hook API，
+同时为需要访问私有字段 / 未暴露内部结构的场景提供**底层偏移量读写逃生舱**。
+危险的指针运算被封装在命名清晰的函数中——你只需要提供偏移量。
 
 ```rust
 use cleat::prelude::*;
@@ -15,6 +17,7 @@ use cleat::prelude::*;
 fn my_mod() -> cleat::Result<()> {
     cleat::set_app_data("/data/data/com.example.game/files");
 
+    // 类型安全的字段访问 — 无需 unsafe
     let klass = Il2CppClass::find("Player")?;
     let hp: i32 = klass.static_field_value("maxHealth")?;
 
@@ -25,6 +28,13 @@ fn my_mod() -> cleat::Result<()> {
 fn god_mode(this: &Il2CppObject, damage: i32) -> cleat::Result<()> {
     god_mode::original(this, 0);
     Ok(())
+}
+
+// 底层偏移量访问 — 用于私有字段 / 未暴露类型
+fn patch_dictionary(obj: &Il2CppObject) {
+    let entries = unsafe { obj.read_ptr_at(0x18) }.unwrap();  // Dictionary.entries
+    let count   = unsafe { obj.read_i32_at(0x20) };           // Dictionary.count
+    // ...
 }
 ```
 

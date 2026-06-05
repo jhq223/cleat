@@ -109,11 +109,82 @@ impl Il2CppObject {
         Ok(MethodInfo { inner: method })
     }
 
+    // ── low-level field access by offset ─────────────────────────────────
+
+    /// Read a pointer-sized value at a byte offset from the object base.
+    ///
+    /// This is the escape hatch for fields that aren't exposed through
+    /// the typed [`load`](Self::load) / [`store`](Self::store) API —
+    /// private fields, fields whose type Rust doesn't know about, or
+    /// fields inside a managed struct like `Dictionary<K,V>`.
+    ///
+    /// Returns `None` when the object pointer itself is null or when
+    /// the stored pointer field is null.
+    ///
+    /// # Safety
+    ///
+    /// `offset` must be within the object's allocated memory.
+    pub unsafe fn read_ptr_at(&self, offset: isize) -> Option<*mut c_void> {
+        let base = self.raw_ptr();
+        if base.is_null() {
+            return None;
+        }
+        let addr = unsafe { (base as *const u8).add(offset as usize) as *const *mut c_void };
+        let ptr = unsafe { std::ptr::read(addr) };
+        if ptr.is_null() {
+            None
+        } else {
+            Some(ptr)
+        }
+    }
+
+    /// Write a pointer-sized value at a byte offset.
+    ///
+    /// Used together with [`read_ptr_at`](Self::read_ptr_at) when you
+    /// need to mutate a pointer field that isn't reachable through
+    /// [`store`](Self::store).
+    ///
+    /// # Safety
+    ///
+    /// `offset` must be within the object's allocated memory, and
+    /// `val` must be a valid GC-tracked pointer or null.
+    pub unsafe fn write_ptr_at(&self, offset: isize, val: *mut c_void) {
+        let base = self.raw_ptr();
+        if base.is_null() {
+            return;
+        }
+        let addr = unsafe { (base as *mut u8).add(offset as usize) as *mut *mut c_void };
+        unsafe { std::ptr::write(addr, val) };
+    }
+
+    /// Read a 32-bit signed integer at a byte offset.
+    ///
+    /// # Safety
+    ///
+    /// `offset` must be within the object's allocated memory.
+    pub unsafe fn read_i32_at(&self, offset: isize) -> i32 {
+        let base = self.raw_ptr();
+        debug_assert!(!base.is_null());
+        let addr = unsafe { (base as *const u8).add(offset as usize) as *const i32 };
+        unsafe { std::ptr::read(addr) }
+    }
+
+    /// Read a pointer-sized unsigned integer at a byte offset.
+    ///
+    /// # Safety
+    ///
+    /// `offset` must be within the object's allocated memory.
+    pub unsafe fn read_usize_at(&self, offset: isize) -> usize {
+        let base = self.raw_ptr();
+        debug_assert!(!base.is_null());
+        let addr = unsafe { (base as *const u8).add(offset as usize) as *const usize };
+        unsafe { std::ptr::read(addr) }
+    }
+
     // ── internal (used by the hook macro) ─────────────────────────────────
 
     /// The raw object pointer. Hooks use this to pass `this` into the
     /// trampoline.
-    #[doc(hidden)]
     pub fn raw_ptr(&self) -> *mut c_void {
         self.inner.ptr as *mut c_void
     }
@@ -124,7 +195,6 @@ impl Il2CppObject {
     /// # Safety
     ///
     /// `ptr` must be a valid pointer to an IL2CPP-managed object.
-    #[doc(hidden)]
     pub unsafe fn from_raw(ptr: *mut c_void) -> Self {
         Self {
             inner: unsafe { bridge::structs::Object::from_ptr(ptr) },

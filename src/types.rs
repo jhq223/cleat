@@ -189,6 +189,24 @@ impl Il2CppString {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Wrap a raw `Il2CppString*` obtained from outside the typed field
+    /// API — for example from a `Dictionary<K,V>` entry or a `List<T>`
+    /// item slot.
+    ///
+    /// After wrapping you can call [`to_string_lossy`](Self::to_string_lossy)
+    /// or any other `Il2CppString` method on the result.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be null or a valid pointer to a managed
+    /// `System.String`. Passing a non-string pointer will produce
+    /// garbage or Undefined Behaviour on subsequent reads.
+    pub unsafe fn from_raw_ptr(ptr: *mut c_void) -> Self {
+        Self {
+            ptr: ptr as *mut bridge::structs::Il2cppString,
+        }
+    }
 }
 
 impl fmt::Display for Il2CppString {
@@ -309,5 +327,16 @@ impl<T: Copy + 'static> Il2CppArray<T> {
     /// Copy the entire array into a Rust `Vec<T>`.
     pub fn to_vec(&self) -> Vec<T> {
         unsafe { (*self.ptr).to_vector() }
+    }
+
+    /// Raw pointer to the first element — skips past the
+    /// `Il2CppArray` header (`klass`, `monitor`, `bounds`,
+    /// `max_length`).
+    ///
+    /// Use together with [`len`](Self::len) when you need to walk
+    /// an array whose element type is a managed struct that Rust
+    /// doesn't know about (e.g. `Dictionary.Entry`).
+    pub fn data_ptr(&self) -> *const T {
+        unsafe { (*self.ptr).get_pointer() }
     }
 }

@@ -6,7 +6,7 @@
 
 ### `#[cleat::main]`
 
-标记 Mod 入口函数。生成 `load()` 符号供 Android 通过 `System.loadLibrary` 调用。
+标记 Mod 入口函数。生成 `JNI_OnLoad` 符号供 Android 通过 `System.loadLibrary` 调用。
 
 ```rust
 #[cleat::main]
@@ -121,7 +121,7 @@ let result: i32 = klass.invoke_static("Calculate", (10, 20))?;
 
 ## 托管对象 — `Il2CppObject`
 
-`#[derive(Clone, Copy)]`，`!Send + !Sync`。
+`#[derive(Clone, Copy)]`，`Send + Sync`。
 
 ### 字段读写
 
@@ -172,6 +172,10 @@ let result: i32 = obj.invoke_with("Calculate", (10, 20))?;
 
 调用有参、无返回值的实例方法。
 
+#### `obj.invoke_raw_void(&self, name: &str, args: &[*mut c_void]) -> Result<()>`
+
+以裸指针调用无返回值的方法。当 `Args` trait 会传递错误指针时使用——例如传递 `Il2CppObject` 值时，栈地址会被发送而非 GC 对象指针。
+
 #### `obj.method(&self, name: &str) -> Result<MethodInfo>`
 
 获取方法句柄，用于泛型方法特化。
@@ -183,15 +187,61 @@ let data: Il2CppObject = obj
     .invoke(())?;
 ```
 
+### 底层字段访问（按偏移量）
+
+当字段类型未在 cleat 注册时（私有字段、`Dictionary<K,V>` 等托管结构体内部的字段），
+以下 escape hatches 允许你通过已知的字节偏移量直接读写内存。
+
+本节的**所有方法都是 `unsafe` 的**——调用者必须保证偏移量在对象分配的内存范围内。
+
+#### `unsafe obj.read_ptr_at(offset: isize) -> Option<*mut c_void>`
+
+读取指定偏移量处的一个指针值。对象指针或字段自身为 null 时返回 `None`。
+
+```rust
+let dict_ptr = script.raw_ptr();
+let entries = unsafe { script.read_ptr_at(0x18)? }; // Dictionary.entries
+```
+
+#### `unsafe obj.write_ptr_at(offset: isize, val: *mut c_void)`
+
+将指针值写入指定偏移量。
+
+```rust
+unsafe { obj.write_ptr_at(0x18, new_array.as_ptr()) };
+```
+
+#### `unsafe obj.read_i32_at(offset: isize) -> i32`
+
+读取偏移量处的一个 32 位有符号整数。
+
+```rust
+let count = unsafe { dict.read_i32_at(0x20) }; // Dictionary.count
+```
+
+#### `unsafe obj.read_usize_at(offset: isize) -> usize`
+
+读取偏移量处的一个指针宽度无符号整数。
+
+```rust
+let len = unsafe { arr.read_usize_at(0x18) }; // Il2CppArray.max_length
+```
+
 ### 内部方法（Hook 宏使用）
 
-#### `obj.raw_ptr(&self) -> *mut c_void`  *(doc hidden)*
+#### `obj.raw_ptr(&self) -> *mut c_void`
 
-获取原始 IL2CPP 对象指针。
+获取原始 IL2CPP 对象指针。配合 [`from_raw`](#unsafe-il2cppobjectfrom_rawptr-mut_c_void---self)
+可在类型化访问和偏移量访问之间自由切换。
 
-#### `unsafe Il2CppObject::from_raw(ptr: *mut c_void) -> Self`  *(doc hidden)*
+#### `unsafe Il2CppObject::from_raw(ptr: *mut c_void) -> Self`
 
-从原始指针构造。
+从原始指针构造。指针必须是一个有效的 GC 托管对象或 null。
+
+```rust
+let obj = unsafe { Il2CppObject::from_raw(some_ptr) };
+let field = unsafe { obj.read_ptr_at(0x10) };
+```
 
 ---
 
@@ -230,12 +280,27 @@ let s = Il2CppString::new("你好");
 let s2: Il2CppString = "你好".into();
 
 s.to_string_lossy();                    // → String（总是成功）
-s.len();                                // → usize（字符数）
+s.len();                                // → usize（UTF-16 码元数）
 s.is_empty();                           // → bool
+s.as_ptr();                             // → *mut c_void（iCall 用）
 
 // 可失败转换
 let rust: String = String::try_from(&s)?;
 ```
+
+#### `unsafe Il2CppString::from_raw_ptr(ptr: *mut c_void) -> Self`
+
+从在类型化字段 API 之外获取的 IL2CPP 字符串裸指针构造——例如
+从 `Dictionary<K,V>` entry 或 `List<T>` 元素中取出的指针。
+
+```rust
+// 从 Dictionary entry 的 value 槽解码字符串：
+let s = unsafe { Il2CppString::from_raw_ptr(val_ptr) };
+let text = s.to_string_lossy();
+```
+
+> **安全要求**：`ptr` 必须为 null 或一个有效的 `System.String*`。
+> 传入非字符串指针会导致垃圾数据或未定义行为。
 
 ### `Il2CppArray<T>`
 
@@ -245,10 +310,28 @@ let rust: String = String::try_from(&s)?;
 let arr = Il2CppArray::<i32>::new(&element_class, 10)?;
 
 arr.set(0, 42);                         // &mut self
-let val = arr.get(0);                   // 不做越界检查
+let val = arr.get(0);                   // 无边界检查
+arr.at(5);                              // → Option<T>（有边界检查）
 arr.len();                              // → usize
 arr.is_empty();                         // → bool
 arr.to_vec();                           // → Vec<T>
+arr.as_ptr();                           // → *mut c_void（数组对象指针）
+arr.data_ptr();                         // → *const T  （第一个元素指针）
+```
+
+#### `arr.data_ptr() -> *const T`
+
+跳过 Il2CppArray 头部的首元素裸指针。配合 [`len()`](#arrlen---usize)
+一起使用，用于遍历 Rust 侧未定义类型的托管结构体数组（如 `Dictionary.Entry`）。
+
+```rust
+let arr = unsafe { Il2CppArray::<u8>::from_raw(entries_ptr) };
+let count = arr.len();
+let data = arr.data_ptr();
+for i in 0..count {
+    let entry = unsafe { data.add(i * 24) }; // 24 = sizeof(Entry)
+    // ...
+}
 ```
 
 ### `Il2CppList<T>`
@@ -286,6 +369,40 @@ let dist = pos.distance(Vector3::ZERO);
 let q = Quaternion::IDENTITY;
 // 完整 glam 数学运算：dot, cross, normalize, lerp, slerp 等
 ```
+
+---
+
+## iCall API
+
+用于调用通过托管方法查找无法到达的 IL2CPP 内部调用（`[NativeHeader]` / `extern` 方法）。
+
+### `cleat::resolve_icall(name: &str) -> Result<*mut c_void>`
+
+按全限定名解析 iCall（格式：`"Assembly.Class::Method(args)"`）。
+
+```rust
+let ptr = cleat::resolve_icall(
+    "UnityEngine.AssetBundle::LoadFromFile(string)"
+)?;
+```
+
+### `unsafe cleat::invoke_icall_0(fn_ptr: *mut c_void) -> *mut c_void`
+
+调用已解析的 iCall（0 个参数）。
+
+### `unsafe cleat::invoke_icall_1(fn_ptr: *mut c_void, a: *mut c_void) -> *mut c_void`
+
+调用已解析的 iCall（1 个参数）。
+
+### `unsafe cleat::invoke_icall_2(fn_ptr: *mut c_void, a: *mut c_void, b: *mut c_void) -> *mut c_void`
+
+调用已解析的 iCall（2 个参数）。
+
+### `unsafe cleat::invoke_icall_3(fn_ptr: *mut c_void, a: *mut c_void, b: *mut c_void, c: *mut c_void) -> *mut c_void`
+
+调用已解析的 iCall（3 个参数）。
+
+> **安全性**：`fn_ptr` 必须是通过 `resolve_icall` 获取的、签名匹配的有效函数指针。
 
 ---
 

@@ -6,7 +6,7 @@
 
 ### `#[cleat::main]`
 
-Marks the mod entry function. Generates a `load()` symbol that Android calls via `System.loadLibrary`.
+Marks the mod entry function. Generates a `JNI_OnLoad` symbol that Android calls via `System.loadLibrary`.
 
 ```rust
 #[cleat::main]
@@ -121,7 +121,7 @@ Returns the raw bridge method pointer. Used internally by `#[cleat::hook]`.
 
 ## Managed Object — `Il2CppObject`
 
-`#[derive(Clone, Copy)]`, `!Send + !Sync`.
+`#[derive(Clone, Copy)]`, `Send + Sync`.
 
 ### Field Access
 
@@ -172,6 +172,10 @@ let result: i32 = obj.invoke_with("Calculate", (10, 20))?;
 
 Calls an instance method with parameters (void return).
 
+#### `obj.invoke_raw_void(&self, name: &str, args: &[*mut c_void]) -> Result<()>`
+
+Calls a void method with raw C pointers. Use when the `Args` trait would pass the wrong pointer — for example, when passing `Il2CppObject` values whose stack address would be sent instead of the GC object pointer.
+
 #### `obj.method(&self, name: &str) -> Result<MethodInfo>`
 
 Gets a method handle for generic method specialization.
@@ -183,15 +187,66 @@ let data: Il2CppObject = obj
     .invoke(())?;
 ```
 
+### Low-level Field Access (by Offset)
+
+These escape hatches let you read and write fields whose type isn't
+registered in cleat — private fields, fields inside managed structs like
+`Dictionary<K,V>`, or any data at a known byte offset.
+
+All methods in this section are `unsafe` — the caller must guarantee the
+offset is within the object's allocated memory.
+
+#### `unsafe obj.read_ptr_at(offset: isize) -> Option<*mut c_void>`
+
+Reads a pointer-sized value at a byte offset. Returns `None` when the
+object or the stored pointer field is null.
+
+```rust
+let dict_ptr = script.raw_ptr();
+let entries = unsafe { script.read_ptr_at(0x18)? }; // Dictionary.entries
+```
+
+#### `unsafe obj.write_ptr_at(offset: isize, val: *mut c_void)`
+
+Writes a pointer-sized value at a byte offset.
+
+```rust
+unsafe { obj.write_ptr_at(0x18, new_array.as_ptr()) };
+```
+
+#### `unsafe obj.read_i32_at(offset: isize) -> i32`
+
+Reads a 32-bit signed integer at a byte offset.
+
+```rust
+let count = unsafe { dict.read_i32_at(0x20) }; // Dictionary.count
+```
+
+#### `unsafe obj.read_usize_at(offset: isize) -> usize`
+
+Reads a pointer-sized unsigned integer at a byte offset.
+
+```rust
+let len = unsafe { arr.read_usize_at(0x18) }; // Il2CppArray.max_length
+```
+
 ### Internal (Hook macro)
 
-#### `obj.raw_ptr(&self) -> *mut c_void`  *(doc hidden)*
+#### `obj.raw_ptr(&self) -> *mut c_void`
 
-Returns the raw IL2CPP object pointer.
+Returns the raw IL2CPP object pointer. Useful together with
+[`from_raw`](#unsafe-il2cppobjectfrom_rawptr-mut-c_void---self) when
+you need to mix typed and offset-based access.
 
-#### `unsafe Il2CppObject::from_raw(ptr: *mut c_void) -> Self`  *(doc hidden)*
+#### `unsafe Il2CppObject::from_raw(ptr: *mut c_void) -> Self`
 
-Constructs from a raw IL2CPP object pointer.
+Constructs from a raw IL2CPP object pointer. The pointer must be a
+valid GC-tracked object or null.
+
+```rust
+let obj = unsafe { Il2CppObject::from_raw(some_ptr) };
+let field = unsafe { obj.read_ptr_at(0x10) };
+```
 
 ---
 
@@ -230,12 +285,27 @@ let s = Il2CppString::new("Hello");
 let s2: Il2CppString = "Hello".into();
 
 s.to_string_lossy();                    // → String (always succeeds)
-s.len();                                // → usize (char count)
+s.len();                                // → usize (UTF-16 code units)
 s.is_empty();                           // → bool
+s.as_ptr();                             // → *mut c_void (for iCalls)
 
 // Fallible conversion
 let rust: String = String::try_from(&s)?;
 ```
+
+#### `unsafe Il2CppString::from_raw_ptr(ptr: *mut c_void) -> Self`
+
+Wraps a raw IL2CPP string pointer found outside the typed field API —
+for example from a `Dictionary<K,V>` entry or a `List<T>` item slot.
+
+```rust
+// Decode a string from a Dictionary entry's value slot:
+let s = unsafe { Il2CppString::from_raw_ptr(val_ptr) };
+let text = s.to_string_lossy();
+```
+
+> **Safety**: `ptr` must be null or a valid `System.String*`. Passing a
+> non-string pointer produces garbage or Undefined Behaviour.
 
 ### `Il2CppArray<T>`
 
@@ -246,9 +316,29 @@ let arr = Il2CppArray::<i32>::new(&element_class, 10)?;
 
 arr.set(0, 42);                         // &mut self
 let val = arr.get(0);                   // no bounds check
+arr.at(5);                              // → Option<T> (bounds-checked)
 arr.len();                              // → usize
 arr.is_empty();                         // → bool
 arr.to_vec();                           // → Vec<T>
+arr.as_ptr();                           // → *mut c_void (array object ptr)
+arr.data_ptr();                         // → *const T  (first element ptr)
+```
+
+#### `arr.data_ptr() -> *const T`
+
+Raw pointer to the first element, skipping the `Il2CppArray` header.
+Use together with [`len()`](#arrlen---usize) when you need to walk an
+array whose element type is a managed struct that Rust doesn't know
+about (e.g. `Dictionary.Entry`).
+
+```rust
+let arr = unsafe { Il2CppArray::<u8>::from_raw(entries_ptr) };
+let count = arr.len();
+let data = arr.data_ptr();
+for i in 0..count {
+    let entry = unsafe { data.add(i * 24) }; // 24 = sizeof(Entry)
+    // ...
+}
 ```
 
 ### `Il2CppList<T>`
@@ -286,6 +376,40 @@ let dist = pos.distance(Vector3::ZERO);
 let q = Quaternion::IDENTITY;
 // All glam operations available: dot, cross, normalize, lerp, slerp, etc.
 ```
+
+---
+
+## iCall API
+
+For calling IL2CPP internal calls (`[NativeHeader]` / `extern` methods) that aren't reachable through managed method lookup.
+
+### `cleat::resolve_icall(name: &str) -> Result<*mut c_void>`
+
+Resolves an iCall by its fully-qualified name (format: `"Assembly.Class::Method(args)"`).
+
+```rust
+let ptr = cleat::resolve_icall(
+    "UnityEngine.AssetBundle::LoadFromFile(string)"
+)?;
+```
+
+### `unsafe cleat::invoke_icall_0(fn_ptr: *mut c_void) -> *mut c_void`
+
+Call a resolved iCall with 0 arguments.
+
+### `unsafe cleat::invoke_icall_1(fn_ptr: *mut c_void, a: *mut c_void) -> *mut c_void`
+
+Call a resolved iCall with 1 argument.
+
+### `unsafe cleat::invoke_icall_2(fn_ptr: *mut c_void, a: *mut c_void, b: *mut c_void) -> *mut c_void`
+
+Call a resolved iCall with 2 arguments.
+
+### `unsafe cleat::invoke_icall_3(fn_ptr: *mut c_void, a: *mut c_void, b: *mut c_void, c: *mut c_void) -> *mut c_void`
+
+Call a resolved iCall with 3 arguments.
+
+> **Safety**: `fn_ptr` must be a valid function pointer from `resolve_icall` with a matching signature.
 
 ---
 
