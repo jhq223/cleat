@@ -1,6 +1,6 @@
 [package]
 name = "cleat"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Android IL2CPP game modding toolkit — safe Rust bindings for IL2CPP field access, method calls, and inline hooks"
 authors = ["jhq223 <jhq223@gmail.com>"]
