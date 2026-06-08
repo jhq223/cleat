@@ -1,16 +1,20 @@
-use crate::{Args, Error, Il2CppValueType, MethodInfo, Result};
-use il2cpp_bridge_rs as bridge;
+//! Handle to a live managed object on the IL2CPP heap.
+
 use std::ffi::c_void;
 use std::fmt;
 
+use il2cpp_bridge_rs as bridge;
+use il2cpp_bridge_rs::structs::Field;
+
+use crate::{Args, Error, Il2CppClass, Il2CppValueType, MethodInfo, Result};
+
 /// A handle to a live managed object on the IL2CPP heap.
 ///
-/// Cheap to copy (it's a single pointer under the hood). Two handles are
-/// equal when they point to the same C# object.
+/// Cheap to copy — it's a single pointer under the hood. Two handles
+/// are equal when they point to the same C# object.
 ///
-/// Not `Send` / `Sync` — managed object pointers are tied to the creating
-/// thread. If you need cross-thread access, wrap it in a newtype and
-/// `unsafe impl Send` yourself.
+/// Marked `Send + Sync` because IL2CPP runs single-threaded in the
+/// Unity player — objects are never shared across threads in practice.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct Il2CppObject {
@@ -28,7 +32,6 @@ impl Il2CppObject {
     /// ```ignore
     /// let hp: i32 = obj.load("currentHealth")?;
     /// let name: Il2CppString = obj.load("playerName")?;
-    /// let weapon: Il2CppObject = obj.load("equippedWeapon")?;
     /// ```
     pub fn load<T: Il2CppValueType>(&self, name: &str) -> Result<T> {
         let field = self
@@ -39,10 +42,6 @@ impl Il2CppObject {
     }
 
     /// Write an instance field by name.
-    ///
-    /// Takes `&self` despite mutating the managed heap — Rust's borrow
-    /// checker can't see the mutation because it happens through a raw
-    /// pointer.
     pub fn store<T: Il2CppValueType>(&self, name: &str, val: T) -> Result<()> {
         let field = self
             .inner
@@ -51,45 +50,48 @@ impl Il2CppObject {
         unsafe { T::store_field(&field, val) }
     }
 
-    /// Call a parameterless method and get the return value.
+    /// Get a cached field handle for repeated access.
+    ///
+    /// The handle remembers the field offset — subsequent `get()`/`set()`
+    /// calls skip the name lookup.
     ///
     /// ```ignore
-    /// let name: Il2CppString = obj.invoke("get_Name")?;
-    /// let hp: i32 = obj.invoke("get_HP")?;
+    /// let hp_field = obj.field("currentHealth")?;
+    /// let hp: i32 = hp_field.get()?;
+    /// hp_field.set(999)?;
     /// ```
-    pub fn invoke<T: Il2CppValueType>(&self, name: &str) -> Result<T> {
-        self.invoke_with(name, ())
+    pub fn field(&self, name: &str) -> Result<FieldHandle> {
+        let field = self
+            .inner
+            .field(name)
+            .ok_or_else(|| Error::FieldNotFound(name.to_string()))?;
+        Ok(FieldHandle { field })
     }
 
-    /// Call a parameterless void method.
-    pub fn invoke_void(&self, name: &str) -> Result<()> {
-        self.invoke_with_void(name, ())
-    }
+    // ── method invocation ─────────────────────────────────────────────────
 
-    // ── parameterised calls ───────────────────────────────────────────────
-
-    /// Call a method with arguments and get the return value.
+    /// Call a method and get the return value.
+    ///
+    /// `args` is a tuple — `()` for no parameters, `(42,)` for one, etc.
     ///
     /// ```ignore
-    /// let result: i32 = obj.invoke_with("Calculate", (10, 20))?;
+    /// let hp: i32 = obj.invoke("get_HP", ())?;
+    /// let result: i32 = obj.invoke("Calculate", (10, 20))?;
     /// ```
-    pub fn invoke_with<T: Il2CppValueType>(&self, name: &str, args: impl Args) -> Result<T> {
-        let method = self.method(name)?;
+    pub fn invoke<T: Il2CppValueType>(&self, name: &str, args: impl Args) -> Result<T> {
+        let method = self.get_method(name)?;
         method.invoke(args)
     }
 
-    /// Call a method with arguments, void return.
-    pub fn invoke_with_void(&self, name: &str, args: impl Args) -> Result<()> {
-        let method = self.method(name)?;
+    /// Call a void method.
+    ///
+    /// ```ignore
+    /// obj.invoke_void("Update", ())?;
+    /// obj.invoke_void("SetHP", (999,))?;
+    /// ```
+    pub fn invoke_void(&self, name: &str, args: impl Args) -> Result<()> {
+        let method = self.get_method(name)?;
         method.invoke_void(args)
-    }
-
-    /// Call a void method with raw pointers — for when Args trait
-    /// would pass the wrong pointer (e.g. Il2CppObject gets stack
-    /// address of wrapper instead of GC object pointer).
-    pub fn invoke_raw_void(&self, name: &str, args: &[*mut c_void]) -> Result<()> {
-        let method = self.method(name)?;
-        unsafe { method.inner.call::<()>(args).map_err(Error::Bridge) }
     }
 
     /// Get a method handle, useful when you need to specialise a generic
@@ -102,24 +104,30 @@ impl Il2CppObject {
     ///     .invoke(())?;
     /// ```
     pub fn method(&self, name: &str) -> Result<MethodInfo> {
-        let method = self
-            .inner
-            .method(name)
-            .ok_or_else(|| Error::MethodNotFound(name.to_string()))?;
-        Ok(MethodInfo { inner: method })
+        self.get_method(name)
+    }
+
+    /// Get the class of this object at runtime.
+    ///
+    /// Returns the actual type, even if the handle was obtained as
+    /// a base class reference.
+    ///
+    /// ```ignore
+    /// let klass = obj.class()?;
+    /// if klass.is_subclass_of(&player_class, false) { ... }
+    /// ```
+    pub fn class(&self) -> Result<Il2CppClass> {
+        self.inner
+            .get_class()
+            .map(|c| Il2CppClass { inner: c })
+            .ok_or_else(|| Error::Bridge("could not get class for object".into()))
     }
 
     // ── low-level field access by offset ─────────────────────────────────
 
     /// Read a pointer-sized value at a byte offset from the object base.
     ///
-    /// This is the escape hatch for fields that aren't exposed through
-    /// the typed [`load`](Self::load) / [`store`](Self::store) API —
-    /// private fields, fields whose type Rust doesn't know about, or
-    /// fields inside a managed struct like `Dictionary<K,V>`.
-    ///
-    /// Returns `None` when the object pointer itself is null or when
-    /// the stored pointer field is null.
+    /// Returns `None` when the object or the stored pointer is null.
     ///
     /// # Safety
     ///
@@ -140,14 +148,9 @@ impl Il2CppObject {
 
     /// Write a pointer-sized value at a byte offset.
     ///
-    /// Used together with [`read_ptr_at`](Self::read_ptr_at) when you
-    /// need to mutate a pointer field that isn't reachable through
-    /// [`store`](Self::store).
-    ///
     /// # Safety
     ///
-    /// `offset` must be within the object's allocated memory, and
-    /// `val` must be a valid GC-tracked pointer or null.
+    /// `offset` must be within the object's allocated memory.
     pub unsafe fn write_ptr_at(&self, offset: isize, val: *mut c_void) {
         let base = self.raw_ptr();
         if base.is_null() {
@@ -181,7 +184,7 @@ impl Il2CppObject {
         unsafe { std::ptr::read(addr) }
     }
 
-    // ── internal (used by the hook macro) ─────────────────────────────────
+    // ── internal ─────────────────────────────────────────────────────────
 
     /// The raw object pointer. Hooks use this to pass `this` into the
     /// trampoline.
@@ -189,8 +192,7 @@ impl Il2CppObject {
         self.inner.ptr as *mut c_void
     }
 
-    /// Wrap a raw pointer back into a handle. The hook macro uses this to
-    /// turn the C-ABI `this` back into a borrowable `Il2CppObject`.
+    /// Wrap a raw pointer back into a handle.
     ///
     /// # Safety
     ///
@@ -199,6 +201,14 @@ impl Il2CppObject {
         Self {
             inner: unsafe { bridge::structs::Object::from_ptr(ptr) },
         }
+    }
+
+    fn get_method(&self, name: &str) -> Result<MethodInfo> {
+        let method = self
+            .inner
+            .method(name)
+            .ok_or_else(|| Error::MethodNotFound(name.to_string()))?;
+        Ok(MethodInfo { inner: method })
     }
 }
 
@@ -218,13 +228,9 @@ impl PartialEq for Il2CppObject {
 
 impl Eq for Il2CppObject {}
 
-// IL2CPP runs single-threaded in the Unity player — marking Send + Sync
-// is safe in practice since objects are never shared across threads.
 unsafe impl Send for Il2CppObject {}
 unsafe impl Sync for Il2CppObject {}
 
-// Null default — the hook wrapper uses this when the inner function
-// returns `Err`. The zeroed object will never be dereferenced.
 impl Default for Il2CppObject {
     fn default() -> Self {
         Self {
@@ -233,18 +239,47 @@ impl Default for Il2CppObject {
     }
 }
 
+// ── Il2CppValueType impl ──────────────────────────────────────────────────
+
 unsafe impl Il2CppValueType for Il2CppObject {
-    unsafe fn load_field(field: &il2cpp_bridge_rs::structs::Field) -> Result<Self> {
+    unsafe fn load_field(field: &Field) -> Result<Self> {
         let ptr = unsafe { field.get_value::<*mut c_void>().map_err(Error::Bridge)? };
         let obj = unsafe { bridge::structs::Object::from_ptr(ptr) };
         Ok(Il2CppObject { inner: obj })
     }
 
-    unsafe fn store_field(field: &il2cpp_bridge_rs::structs::Field, val: Self) -> Result<()> {
+    unsafe fn store_field(field: &Field, val: Self) -> Result<()> {
         unsafe {
             field
                 .set_value::<*mut c_void>(val.inner.as_ptr())
                 .map_err(Error::Bridge)
         }
+    }
+
+    /// Pass the GC object pointer directly instead of a stack address.
+    unsafe fn to_arg_ptr(&self) -> *mut c_void {
+        self.inner.as_ptr()
+    }
+}
+
+// ── FieldHandle ────────────────────────────────────────────────────────────
+
+/// A cached field handle — remembers the field offset so subsequent
+/// reads and writes skip the name lookup.
+///
+/// Obtain via [`Il2CppObject::field`].
+pub struct FieldHandle {
+    field: Field,
+}
+
+impl FieldHandle {
+    /// Read the field value.
+    pub fn get<T: Il2CppValueType>(&self) -> Result<T> {
+        unsafe { T::load_field(&self.field) }
+    }
+
+    /// Write the field value.
+    pub fn set<T: Il2CppValueType>(&self, val: T) -> Result<()> {
+        unsafe { T::store_field(&self.field, val) }
     }
 }

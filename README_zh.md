@@ -15,8 +15,6 @@ use cleat::prelude::*;
 
 #[cleat::main]
 fn my_mod() -> cleat::Result<()> {
-    cleat::set_app_data("/data/data/com.example.game/files");
-
     // 类型安全的字段访问 — 无需 unsafe
     let klass = Il2CppClass::find("Player")?;
     let hp: i32 = klass.static_field_value("maxHealth")?;
@@ -55,8 +53,6 @@ use cleat::prelude::*;
 
 #[cleat::main]
 fn main() -> cleat::Result<()> {
-    cleat::set_app_data("/data/data/com.example.game/files");
-
     let klass = Il2CppClass::find("UnityEngine.Time")?;
     let time: f32 = klass.static_field_value("timeScale")?;
     log::info!("timeScale = {}", time);

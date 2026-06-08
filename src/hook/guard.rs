@@ -1,15 +1,15 @@
-//! ShadowHook inline hook integration.
+//! ShadowHook inline hook integration (Android only).
 //!
-//! We don't link against libshadowhook.so at compile time — symbols are
-//! resolved at runtime through `dlopen` / `dlsym`. Users need to extract
-//! libshadowhook.so from the Maven AAR and place it in the APK under
-//! `lib/arm64-v8a/`.
+//! Symbols are resolved at runtime through `dlopen` / `dlsym`.
+//! Users need to extract `libshadowhook.so` from the Maven AAR and
+//! place it in the APK under `lib/arm64-v8a/`.
 
-use crate::{Error, Result};
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::{Once, OnceLock};
 
-// ── Function pointer types for each ShadowHook API ──
+use crate::{Error, Result};
+
+// ── Function pointer types ──
 
 type ShInitFn = unsafe extern "C" fn(mode: u32, debuggable: bool) -> i32;
 type ShHookFn = unsafe extern "C" fn(
@@ -21,7 +21,6 @@ type ShUnhookFn = unsafe extern "C" fn(stub: *mut c_void) -> i32;
 type ShGetErrnoFn = unsafe extern "C" fn() -> i32;
 type ShToErrmsgFn = unsafe extern "C" fn(err_num: i32) -> *const c_char;
 
-/// Resolved ShadowHook API entry points. Initialised lazily on first use.
 struct ShadowHookAPI {
     init: ShInitFn,
     hook_func_addr: ShHookFn,
@@ -30,13 +29,8 @@ struct ShadowHookAPI {
     to_errmsg: ShToErrmsgFn,
 }
 
-/// OnceLock doesn't have an infallible `try` variant on stable, so we wrap
-/// the result in an `Option`. `None` means the library wasn't found.
 static SH: OnceLock<Option<ShadowHookAPI>> = OnceLock::new();
 
-/// Open libshadowhook.so and resolve the five API functions we need.
-/// Returns `None` instead of panicking — callers decide how to handle the
-/// missing-library case.
 fn resolve_shadowhook() -> Option<&'static ShadowHookAPI> {
     SH.get_or_init(|| {
         let handle = unsafe {
@@ -72,7 +66,6 @@ fn resolve_shadowhook() -> Option<&'static ShadowHookAPI> {
     .as_ref()
 }
 
-/// One-shot ShadowHook initialisation guard.
 static SHADOWHOOK_INIT: Once = Once::new();
 
 fn ensure_init() {
@@ -81,7 +74,6 @@ fn ensure_init() {
             log::error!("shadowhook_init failed: library not found");
             return;
         };
-        // SHADOWHOOK_MODE_UNIQUE = 1 — each address can only be hooked once.
         let ret = unsafe { (api.init)(1, false) };
         if ret != 0 {
             log::error!("shadowhook_init failed: {}", ret);
@@ -91,22 +83,14 @@ fn ensure_init() {
 
 // ── HookGuard ────────────────────────────────────────────────────────────
 
-/// Opaque hook handle. Created and managed by the `#[cleat::hook]` macro —
-/// users never construct or destroy these directly.
-///
-/// Carries the ShadowHook stub (needed for unhook) and the trampoline pointer
-/// that lets `original()` call the real function after patching.
-#[doc(hidden)]
+/// Opaque hook handle. Created and managed by the `#[cleat::hook]` macro.
 pub struct HookGuard {
     stub: *mut c_void,
     original: *const c_void,
 }
 
-#[doc(hidden)]
 impl HookGuard {
     /// Patch the target function so calls are redirected to `replace`.
-    /// Returns a guard that will restore the original code when dropped
-    /// (or when `uninstall` is called explicitly).
     pub fn install(target: *const c_void, replace: *const c_void) -> Result<Self> {
         ensure_init();
         let Some(api) = resolve_shadowhook() else {
@@ -126,22 +110,19 @@ impl HookGuard {
         Ok(Self { stub, original })
     }
 
-    /// The trampoline address. The generated `original()` function transmutes
-    /// this into a proper function pointer and calls through it.
+    /// The trampoline address for calling the original function.
     pub fn trampoline(&self) -> *const c_void {
         self.original
     }
 
-    /// Tear down the hook, putting the original instructions back.
-    /// Consumes the guard so Drop won't double-unhook.
+    /// Tear down the hook, restoring the original code.
     pub fn uninstall(self) -> Result<()> {
         let Some(api) = resolve_shadowhook() else {
-            // Library already unloaded — stub is stale anyway.
             std::mem::forget(self);
             return Ok(());
         };
         let stub = self.stub;
-        std::mem::forget(self); // don't let Drop try again
+        std::mem::forget(self);
         let ret = unsafe { (api.unhook)(stub) };
         if ret != 0 {
             return Err(Error::Hook(format!("shadowhook_unhook failed: {ret}")));
@@ -156,23 +137,16 @@ impl Drop for HookGuard {
     }
 }
 
-// IL2CPP runs single-threaded — HookGuard is never shared between threads.
 unsafe impl Send for HookGuard {}
 unsafe impl Sync for HookGuard {}
 
 // ── try_unhook ───────────────────────────────────────────────────────────
 
-/// Best-effort unhook that never panics (safe to use from Drop).
-///
-/// Uses `RTLD_NOLOAD` to check whether libshadowhook.so is still in memory.
-/// If the library has already been unloaded we can't do anything — we just
-/// discard the stub and move on.
 fn try_unhook(stub: &mut *mut c_void) {
     if stub.is_null() {
         return;
     }
 
-    // RTLD_NOLOAD — don't trigger a load, just check what's already there.
     let handle = unsafe {
         libc::dlopen(
             b"libshadowhook.so\0".as_ptr() as *const _,

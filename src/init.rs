@@ -1,15 +1,9 @@
-use crate::{Error, Result};
 #[cfg(target_os = "android")]
 use std::ffi::CString;
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 #[cfg(target_os = "android")]
 use std::thread;
 #[cfg(target_os = "android")]
 use std::time::Duration;
-
-/// The app's private data directory, set once at startup.
-static APP_DATA: OnceLock<PathBuf> = OnceLock::new();
 
 /// Max retries waiting for the target image to be loaded.
 #[cfg(target_os = "android")]
@@ -56,32 +50,4 @@ pub fn init(target_image: &str, on_ready: impl FnOnce() + Send + 'static) {
 #[cfg(not(target_os = "android"))]
 pub fn init(_target_image: &str, _on_ready: impl FnOnce() + Send + 'static) {
     log::info!("cleat init: skipped (not on Android)");
-}
-
-/// Tell cleat where your app's private files live.
-///
-/// Call this once at the top of your `#[cleat::main]` function. Subsequent
-/// calls are ignored.
-///
-/// ```ignore
-/// cleat::set_app_data("/data/data/com.example.game/files");
-/// ```
-pub fn set_app_data(path: impl AsRef<Path>) {
-    let _ = APP_DATA.set(path.as_ref().to_path_buf());
-}
-
-/// Get the app data directory that was set with [`set_app_data`].
-///
-/// Returns `Err(Error::NotInitialized)` if `set_app_data` hasn't been
-/// called yet.
-///
-/// ```ignore
-/// let config = cleat::app_data()?.join("ModConfig/config.json");
-/// let json = std::fs::read_to_string(config)?;
-/// ```
-pub fn app_data() -> Result<&'static Path> {
-    APP_DATA
-        .get()
-        .map(|p| p.as_path())
-        .ok_or(Error::NotInitialized)
 }

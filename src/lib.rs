@@ -10,29 +10,17 @@
 //!
 //! #[cleat::main]
 //! fn my_mod() -> cleat::Result<()> {
-//!     cleat::set_app_data("/data/data/com.example.game/files");
-//!
 //!     let player = Il2CppClass::find("Player")?;
 //!     let max_hp: i32 = player.static_field_value("maxHealth")?;
-//!
 //!     Ok(())
 //! }
 //!
 //! #[cleat::hook("Assembly-CSharp", "Player", "TakeDamage")]
 //! fn god_mode(this: &Il2CppObject, damage: i32) -> cleat::Result<()> {
-//!     // Nullify incoming damage.
 //!     god_mode::original(this, 0);
 //!     Ok(())
 //! }
 //! ```
-//!
-//! ## Features
-//!
-//! * Field access — read and write static/instance fields.
-//! * Method calls — parameterised and generic methods supported.
-//! * Inline hooks — `#[cleat::hook]` wraps ShadowHook, no manual trampoline code.
-//! * Custom value types — `#[cleat::value_type]` derives FFI-safe read/write for
-//!   your `#[repr(C)]` structs.
 //!
 //! ## Setup
 //!
@@ -47,120 +35,46 @@
 //! ```bash
 //! cargo ndk -t arm64-v8a -o ./target/jniLibs build --release
 //! ```
-//!
-//! ## Requirements
-//!
-//! * Rust nightly (edition 2024)
-//! * Android NDK r26+
-//! * cargo-ndk ≥ 3.0
-//! * libshadowhook.so (runtime, bundled in the APK)
 
 // Re-export proc macros so users only need `use cleat::prelude::*`.
 pub use cleat_macros::*;
 
-use il2cpp_bridge_rs as bridge;
-use std::ffi::{CString, c_void};
+// Re-export the full bridge crate for advanced use.
+pub use il2cpp_bridge_rs as bridge;
 
-// Internal modules.
-mod class;
 mod error;
-mod init;
-mod math;
-mod method;
-mod object;
-mod types;
-mod value_type;
-
-#[cfg(target_os = "android")]
+mod ffi;
 mod hook;
-
-// Public re-exports.
+mod init;
+mod meta;
+mod object;
 pub mod prelude;
+mod types;
 
-pub use class::Il2CppClass;
 pub use error::{Error, Result};
-pub use init::{app_data, init, set_app_data};
-pub use math::{Quaternion, Vector2, Vector3, Vector4};
-pub use method::MethodInfo;
-pub use object::Il2CppObject;
-pub use types::{Il2CppArray, Il2CppList, Il2CppString};
-pub use value_type::{Args, Il2CppValueType};
-
-/// Resolve an IL2CPP internal call (iCall) by its fully qualified name.
-///
-/// iCall names follow the format `"Assembly.Class::Method(args)"`.
-/// Use when managed method lookup fails for `[NativeHeader]` / `extern`
-/// methods (e.g. Unity AssetBundle loading APIs).
-///
-/// Returns the raw native function pointer.
-pub fn resolve_icall(name: &str) -> Result<*mut std::ffi::c_void> {
-    let c_name =
-        CString::new(name).map_err(|_| Error::Bridge("iCall name contains null byte".into()))?;
-    let ptr = unsafe { bridge::api::resolve_icall(c_name.as_ptr()) };
-    if ptr.is_null() {
-        return Err(Error::Bridge(format!("iCall not found: {name}")));
-    }
-    Ok(ptr)
-}
-
-macro_rules! icall_arity {
-    (0, $name:ident,) => {
-        /// # Safety
-        ///
-        /// `fn_ptr` must be a valid function pointer obtained from
-        /// [`resolve_icall`] with a matching signature.
-        pub unsafe fn $name(fn_ptr: *mut c_void) -> *mut c_void {
-            let f: extern "C" fn() -> *mut c_void = unsafe { std::mem::transmute(fn_ptr) };
-            f()
-        }
-    };
-}
-
-macro_rules! icall_arity_n {
-    ($name:ident, $($pn:ident : $pt:ty),+) => {
-        /// # Safety
-        ///
-        /// `fn_ptr` must be a valid function pointer obtained from
-        /// [`resolve_icall`] with a matching signature.
-        pub unsafe fn $name(fn_ptr: *mut c_void, $($pn: $pt),+) -> *mut c_void {
-            let f: extern "C" fn($($pt),+) -> *mut c_void =
-                unsafe { std::mem::transmute(fn_ptr) };
-            f($($pn),+)
-        }
-    };
-}
-
-icall_arity!(0, invoke_icall_0,);
-icall_arity_n!(invoke_icall_1, a: *mut c_void);
-icall_arity_n!(invoke_icall_2, a: *mut c_void, b: *mut c_void);
-icall_arity_n!(invoke_icall_3, a: *mut c_void, b: *mut c_void, c: *mut c_void);
-
-#[cfg(target_os = "android")]
+pub use ffi::icall::resolve as resolve_icall;
+pub use ffi::icall::invoke_0 as invoke_icall_0;
+pub use ffi::icall::invoke_1 as invoke_icall_1;
+pub use ffi::icall::invoke_2 as invoke_icall_2;
+pub use ffi::icall::invoke_3 as invoke_icall_3;
+pub use ffi::icall::invoke_4 as invoke_icall_4;
+pub use ffi::icall::invoke_5 as invoke_icall_5;
+pub use ffi::icall::invoke_6 as invoke_icall_6;
+pub use ffi::icall::invoke_7 as invoke_icall_7;
+pub use ffi::icall::invoke_8 as invoke_icall_8;
+pub use ffi::icall::invoke_9 as invoke_icall_9;
+pub use ffi::icall::invoke_10 as invoke_icall_10;
+pub use ffi::icall::invoke_11 as invoke_icall_11;
+pub use ffi::icall::invoke_12 as invoke_icall_12;
+pub use ffi::icall::invoke_13 as invoke_icall_13;
+pub use ffi::icall::invoke_14 as invoke_icall_14;
+pub use ffi::icall::invoke_15 as invoke_icall_15;
 pub use hook::HookGuard;
-
-/// Desktop stub — allows `cargo check` on non-Android platforms.
-/// Hooks are no-ops and will fail gracefully at runtime.
-#[cfg(not(target_os = "android"))]
-pub struct HookGuard;
-
-#[cfg(not(target_os = "android"))]
-impl HookGuard {
-    pub fn install(
-        _target: *const std::ffi::c_void,
-        _replace: *const std::ffi::c_void,
-    ) -> crate::Result<Self> {
-        log::warn!("HookGuard::install called on non-Android platform — skipping");
-        Ok(Self)
-    }
-    pub fn trampoline(&self) -> *const std::ffi::c_void {
-        std::ptr::null()
-    }
-    pub fn uninstall(self) -> crate::Result<()> {
-        Ok(())
-    }
-}
-
-#[cfg(not(target_os = "android"))]
-unsafe impl Send for HookGuard {}
-#[cfg(not(target_os = "android"))]
-unsafe impl Sync for HookGuard {}
+pub use init::init;
+pub use meta::class::Il2CppClass;
+pub use meta::method::MethodInfo;
+pub use object::raw::{FieldHandle, Il2CppObject};
+pub use types::{
+    Args, Il2CppArray, Il2CppList, Il2CppString, Il2CppValueType, Quaternion, Vector2, Vector3,
+    Vector4,
+};

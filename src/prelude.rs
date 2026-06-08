@@ -4,11 +4,10 @@
 //! use cleat::prelude::*;
 //! ```
 
-pub use crate::class::Il2CppClass;
 pub use crate::error::{Error, Result};
-pub use crate::init::{app_data, set_app_data};
-pub use crate::math::{Quaternion, Vector2, Vector3, Vector4};
-pub use crate::method::MethodInfo;
-pub use crate::object::Il2CppObject;
-pub use crate::types::{Il2CppArray, Il2CppList, Il2CppString};
-pub use crate::value_type::{Args, Il2CppValueType};
+pub use crate::ffi::icall::resolve as resolve_icall;
+pub use crate::meta::class::Il2CppClass;
+pub use crate::meta::method::MethodInfo;
+pub use crate::object::raw::{FieldHandle, Il2CppObject};
+pub use crate::types::{Args, Il2CppArray, Il2CppList, Il2CppString, Il2CppValueType};
+pub use crate::types::{Quaternion, Vector2, Vector3, Vector4};

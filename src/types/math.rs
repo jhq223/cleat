@@ -1,17 +1,13 @@
 //! Math types re-exported from `il2cpp_bridge_rs` (which wraps
 //! [`glam`](https://crates.io/crates/glam) under the hood).
 //!
-//! All four types are `Il2CppValueType`, so you can read/write them as
-//! fields and pass them as method arguments directly:
-//!
-//! ```ignore
-//! let pos: Vector3 = obj.load("position")?;
-//! let dist = pos.distance(Vector3::ZERO);
-//! obj.store("position", pos + Vector3::new(0.0, 1.0, 0.0))?;
-//! ```
+//! All four types implement `Il2CppValueType`, so you can read/write them
+//! as fields and pass them as method arguments directly.
 
-use crate::{Error, Il2CppValueType, Result};
 use il2cpp_bridge_rs::structs::Field;
+
+use crate::{Error, Result};
+use super::Il2CppValueType;
 
 // Re-export so users don't need to pull in il2cpp_bridge_rs themselves.
 pub use il2cpp_bridge_rs::structs::{Quaternion, Vector2, Vector3, Vector4};

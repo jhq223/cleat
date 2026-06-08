@@ -17,9 +17,6 @@ pub enum Error {
     #[error("method not found: {0}")]
     MethodNotFound(String),
 
-    #[error("cleat not initialized: call set_app_data() first")]
-    NotInitialized,
-
     #[error("bridge error: {0}")]
     Bridge(String),
 
