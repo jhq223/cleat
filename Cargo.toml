@@ -12,9 +12,9 @@ keywords = ["android", "il2cpp", "game-modding", "unity", "hooking"]
 categories = ["game-development", "development-tools::ffi"]
 
 [dependencies]
-il2cpp-bridge-rs = { git = "https://github.com/jhq223/il2cpp-bridge-rs.git", rev = "5c007fe" }
+il2cpp-bridge-rs = { git = "https://github.com/Batchhh/il2cpp-bridge-rs.git" }
 log = "0.4"
-android_logger = "0.14"
+android_logger = "0.15"
 thiserror = "2"
 libc = "0.2"
 
