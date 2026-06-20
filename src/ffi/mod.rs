@@ -1,1 +1,1 @@
-pub mod icall;
+pub mod method_ptr;

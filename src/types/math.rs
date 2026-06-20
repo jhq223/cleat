@@ -6,8 +6,8 @@
 
 use il2cpp_bridge_rs::structs::Field;
 
-use crate::{Error, Result};
 use super::Il2CppValueType;
+use crate::{Error, Result};
 
 // Re-export so users don't need to pull in il2cpp_bridge_rs themselves.
 pub use il2cpp_bridge_rs::structs::{Quaternion, Vector2, Vector3, Vector4};

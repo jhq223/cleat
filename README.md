@@ -7,9 +7,8 @@ Android IL2CPP game modding toolkit.
 ## What
 
 Rust bindings over IL2CPP. You get a **safe** API for field access, method
-calls, and inline hooks, plus **low-level escape hatches** for when you need
-to read unexposed fields at known byte offsets. The dangerous pointer math
-stays in named, auditable functions — you just supply the offset.
+calls, and inline hooks, plus **typed collection wrappers** for `List<T>` and
+`Dictionary<K,V>` so you never need to hand-compute memory offsets.
 
 ```rust
 use cleat::prelude::*;
@@ -29,11 +28,13 @@ fn god_mode(this: &Il2CppObject, damage: i32) -> cleat::Result<()> {
     Ok(())
 }
 
-// Low-level offset-based access — for private / unexposed fields.
-fn patch_dictionary(obj: &Il2CppObject) {
-    let entries = unsafe { obj.read_ptr_at(0x18) }.unwrap();  // Dictionary.entries
-    let count   = unsafe { obj.read_i32_at(0x20) };           // Dictionary.count
-    // ...
+// Typed Dictionary access (0.2+) — no more manual offset math.
+fn read_lookup(obj: &Il2CppObject) {
+    let dict: Il2CppDictionary<*mut std::ffi::c_void, *mut std::ffi::c_void> =
+        obj.load("lookup").unwrap();
+    for (key, val) in dict.iter() {
+        // ...
+    }
 }
 ```
 
@@ -45,7 +46,7 @@ fn patch_dictionary(obj: &Il2CppObject) {
 crate-type = ["cdylib"]
 
 [dependencies]
-cleat = "0.1"
+cleat = "0.2"
 ```
 
 ```rust

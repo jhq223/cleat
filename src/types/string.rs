@@ -6,8 +6,8 @@ use std::fmt::{self, Debug};
 use il2cpp_bridge_rs as bridge;
 use il2cpp_bridge_rs::structs::Field;
 
-use crate::{Error, Result};
 use super::Il2CppValueType;
+use crate::{Error, Result};
 
 /// A managed `System.String` — cheap to copy (it's just a pointer).
 ///

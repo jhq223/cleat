@@ -139,11 +139,7 @@ impl Il2CppObject {
         }
         let addr = unsafe { (base as *const u8).add(offset as usize) as *const *mut c_void };
         let ptr = unsafe { std::ptr::read(addr) };
-        if ptr.is_null() {
-            None
-        } else {
-            Some(ptr)
-        }
+        if ptr.is_null() { None } else { Some(ptr) }
     }
 
     /// Write a pointer-sized value at a byte offset.

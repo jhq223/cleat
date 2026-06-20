@@ -178,8 +178,7 @@ impl Il2CppClass {
     /// let list_int = list_t.inflate(&[&int32])?;
     /// ```
     pub fn inflate(&self, type_args: &[&Il2CppClass]) -> Result<Self> {
-        let classes: Vec<&bridge::structs::Class> =
-            type_args.iter().map(|c| &c.inner).collect();
+        let classes: Vec<&bridge::structs::Class> = type_args.iter().map(|c| &c.inner).collect();
         let inflated = self.inner.inflate(&classes).map_err(Error::Bridge)?;
         // Bridge returns Arc<Class>, unwrap to owned.
         let inner = bridge::structs::Class::clone(&inflated);

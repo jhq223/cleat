@@ -29,7 +29,7 @@
 //! crate-type = ["cdylib"]
 //!
 //! [dependencies]
-//! cleat = "0.1"
+//! cleat = "0.2"
 //! ```
 //!
 //! ```bash
@@ -49,32 +49,34 @@ mod init;
 mod meta;
 mod object;
 pub mod prelude;
+#[cfg(test)]
+mod tests;
 mod types;
+mod unity;
 
 pub use error::{Error, Result};
-pub use ffi::icall::resolve as resolve_icall;
-pub use ffi::icall::invoke_0 as invoke_icall_0;
-pub use ffi::icall::invoke_1 as invoke_icall_1;
-pub use ffi::icall::invoke_2 as invoke_icall_2;
-pub use ffi::icall::invoke_3 as invoke_icall_3;
-pub use ffi::icall::invoke_4 as invoke_icall_4;
-pub use ffi::icall::invoke_5 as invoke_icall_5;
-pub use ffi::icall::invoke_6 as invoke_icall_6;
-pub use ffi::icall::invoke_7 as invoke_icall_7;
-pub use ffi::icall::invoke_8 as invoke_icall_8;
-pub use ffi::icall::invoke_9 as invoke_icall_9;
-pub use ffi::icall::invoke_10 as invoke_icall_10;
-pub use ffi::icall::invoke_11 as invoke_icall_11;
-pub use ffi::icall::invoke_12 as invoke_icall_12;
-pub use ffi::icall::invoke_13 as invoke_icall_13;
-pub use ffi::icall::invoke_14 as invoke_icall_14;
-pub use ffi::icall::invoke_15 as invoke_icall_15;
+pub use ffi::method_ptr::MethodPtr;
+pub use ffi::method_ptr::invoke_method_0;
+pub use ffi::method_ptr::invoke_method_1;
+pub use ffi::method_ptr::invoke_method_2;
+pub use ffi::method_ptr::invoke_method_3;
+pub use ffi::method_ptr::invoke_method_4;
+pub use ffi::method_ptr::invoke_method_5;
+pub use ffi::method_ptr::invoke_method_inst_0;
+pub use ffi::method_ptr::invoke_method_inst_1;
+pub use ffi::method_ptr::invoke_method_inst_2;
+pub use ffi::method_ptr::invoke_method_inst_3;
+pub use ffi::method_ptr::invoke_method_inst_4;
+pub use ffi::method_ptr::invoke_method_inst_5;
+pub use ffi::method_ptr::resolve_method;
 pub use hook::HookGuard;
 pub use init::init;
 pub use meta::class::Il2CppClass;
 pub use meta::method::MethodInfo;
 pub use object::raw::{FieldHandle, Il2CppObject};
 pub use types::{
-    Args, Il2CppArray, Il2CppList, Il2CppString, Il2CppValueType, Quaternion, Vector2, Vector3,
-    Vector4,
+    Args, Il2CppArray, Il2CppDictionary, Il2CppList, Il2CppString, Il2CppValueType, Quaternion,
+    Vector2, Vector3, Vector4,
 };
+pub use unity::AssetBundle;
+pub use unity::load_asset_from_memory;

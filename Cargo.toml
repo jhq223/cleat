@@ -1,6 +1,6 @@
 [package]
 name = "cleat"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "Android IL2CPP game modding toolkit — safe Rust bindings for IL2CPP field access, method calls, and inline hooks"
 authors = ["jhq223 <jhq223@gmail.com>"]
@@ -12,7 +12,7 @@ keywords = ["android", "il2cpp", "game-modding", "unity", "hooking"]
 categories = ["game-development", "development-tools::ffi"]
 
 [dependencies]
-il2cpp-bridge-rs = { git = "https://github.com/Batchhh/il2cpp-bridge-rs.git" }
+il2cpp-bridge-rs = { git = "https://github.com/jhq223/il2cpp-bridge-rs.git", branch = "feat/optional-symbols" }
 log = "0.4"
 android_logger = "0.15"
 thiserror = "2"
