@@ -1,152 +1,138 @@
-//! `UnityEngine.AssetBundle` high-level wrapper.
-//!
-//! Encapsulates the multi-step AssetBundle loading flow (LoadFromMemoryAsync →
-//! get_assetBundle → LoadAssetAsync → get_allAssets) behind a clean API.
-//!
-//! Uses [`resolve_method`](crate::ffi::method_ptr::resolve_method) internally
-//! so it works on both old Unity (iCall binding) and Unity 6+ (`[FreeFunction]`
-//! binding).
+//! Synchronous AssetBundle operations. Call from Unity's main thread.
+use crate::{Class, GcHandle, Il2CppArray, Object, Result};
 
-use crate::{
-    Il2CppArray, Il2CppClass, Il2CppObject, Il2CppString, Result,
-    ffi::method_ptr::{
-        invoke_method_2, invoke_method_inst_0, invoke_method_inst_2, resolve_method,
-    },
-};
-
-const ASM: &str = "UnityEngine.AssetBundleModule.dll";
-const CLASS_AB: &str = "UnityEngine.AssetBundle";
-const CLASS_REQ: &str = "UnityEngine.AssetBundleCreateRequest";
-const CLASS_AREQ: &str = "UnityEngine.AssetBundleRequest";
-
-/// A loaded Unity `AssetBundle`.
-///
-/// Wraps the managed `AssetBundle` object and provides high-level methods
-/// for loading assets from it.
 pub struct AssetBundle {
-    obj: Il2CppObject,
+    object: Object,
+    _root: GcHandle,
 }
-
 impl AssetBundle {
-    /// Load an `AssetBundle` from a byte slice in memory.
-    ///
-    /// Equivalent to `AssetBundle.LoadFromMemoryAsync(data).assetBundle`.
+    /// Load asynchronously, yielding to the cleat coroutine driver each frame.
+    /// Poll this future on Unity's main thread.
+    pub async fn load_from_memory_async(data: &[u8]) -> Result<Self> {
+        let (_bytes, request) = {
+            let array = Il2CppArray::<u8>::from_slice(&Class::find("System.Byte")?, data)?;
+            let bytes = array.as_object().root()?;
+            let class = Class::find("UnityEngine.AssetBundle")?;
+            let request = match class.method(("LoadFromMemoryAsync", ["System.Byte[]"])) {
+                Ok(method) => method.invoke((array,))?,
+                Err(crate::Error::MethodNotFound(_)) => class.call(
+                    (
+                        "LoadFromMemoryAsync_Internal",
+                        ["System.Byte[]", "System.UInt32"],
+                    ),
+                    (array, 0u32),
+                )?,
+                Err(error) => return Err(error),
+            };
+            (bytes, request)
+        };
+        let request = wait_for(request).await?;
+        Self::from_object(request.object().get("assetBundle")?)
+    }
+
+    /// Load an asset asynchronously. The bundle must remain loaded until this
+    /// future completes; poll it on Unity's main thread.
+    pub async fn load_asset_async(&self, name: &str, type_class: &str) -> Result<Object> {
+        self.load_asset_as_async(name, &Class::find(type_class)?)
+            .await
+    }
+
+    pub async fn load_asset_as_async(&self, name: &str, class: &Class) -> Result<Object> {
+        let request = self.object.call(
+            ("LoadAssetAsync", ["System.String", "System.Type"]),
+            (name, class.type_object()?),
+        )?;
+        let request = wait_for(request).await?;
+        let object: Object = request.object().get("asset")?;
+        if object.is_null() {
+            return Err(crate::Error::NullObject);
+        }
+        Ok(object)
+    }
+    /// Load a bundle directly from disk on Unity's main thread.
+    pub fn load_from_file(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let path = path
+            .as_ref()
+            .to_str()
+            .ok_or_else(|| crate::Error::Bridge("asset bundle path is not UTF-8".into()))?;
+        let class = Class::find("UnityEngine.AssetBundle")?;
+        let object = match class.method(("LoadFromFile", ["System.String"])) {
+            Ok(method) => method.invoke((path,))?,
+            Err(crate::Error::MethodNotFound(_)) => class.call(
+                (
+                    "LoadFromFile_Internal",
+                    ["System.String", "System.UInt32", "System.UInt64"],
+                ),
+                (path, 0u32, 0u64),
+            )?,
+            Err(error) => return Err(error),
+        };
+        Self::from_object(object)
+    }
     pub fn load_from_memory(data: &[u8]) -> Result<Self> {
-        // Build a managed byte[] from the raw bytes.
-        let byte_class = Il2CppClass::find("System.Byte")?;
-        let mut arr = Il2CppArray::new(&byte_class, data.len())?;
-        for (i, &b) in data.iter().enumerate() {
-            unsafe { arr.set_unchecked(i, b) };
+        let bytes = Class::find("System.Byte")?;
+        let array = Il2CppArray::<u8>::from_slice(&bytes, data)?;
+        let class = Class::find("UnityEngine.AssetBundle")?;
+        let object = match class.method(("LoadFromMemory", ["System.Byte[]"])) {
+            Ok(method) => method.invoke((array,))?,
+            Err(crate::Error::MethodNotFound(_)) => class.call(
+                (
+                    "LoadFromMemory_Internal",
+                    ["System.Byte[]", "System.UInt32"],
+                ),
+                (array, 0u32),
+            )?,
+            Err(error) => return Err(error),
+        };
+        Self::from_object(object)
+    }
+    pub fn from_object(object: Object) -> Result<Self> {
+        if !object.is_instance_of(&Class::find("UnityEngine.AssetBundle")?)? {
+            return Err(crate::Error::Bridge("object is not an AssetBundle".into()));
         }
-
-        // 1. LoadFromMemoryAsync_Internal(byte[], uint) — static
-        let m_load = resolve_method(ASM, CLASS_AB, "LoadFromMemoryAsync_Internal")?;
-        let req = unsafe { invoke_method_2(m_load, arr.as_ptr(), std::ptr::null_mut()) };
-        if req.is_null() {
-            return Err(crate::Error::Hook(
-                "LoadFromMemoryAsync returned null".into(),
-            ));
-        }
-
-        // 2. get_assetBundle() — instance on AssetBundleCreateRequest
-        let m_get = resolve_method(ASM, CLASS_REQ, "get_assetBundle")?;
-        let bundle = unsafe { invoke_method_inst_0(m_get, req) };
-        if bundle.is_null() {
-            return Err(crate::Error::Hook("get_assetBundle returned null".into()));
-        }
-
         Ok(Self {
-            obj: unsafe { Il2CppObject::from_raw(bundle) },
+            object,
+            _root: GcHandle::pinned(object)?,
         })
     }
-
-    /// Load a single asset by name.
-    ///
-    /// `type_class` and `type_asm` identify the C# type of the asset
-    /// (e.g. `"UnityEngine.Font"`, `"UnityEngine.TextRenderingModule.dll"`).
-    ///
-    /// Returns the first asset in the `allAssets` array, or an error if
-    /// the array is empty.
-    pub fn load_asset(&self, name: &str, type_class: &str, type_asm: &str) -> Result<Il2CppObject> {
-        // 3. Create a dummy object to obtain System.Type.
-        let font_class = Il2CppClass::find_with(type_class, type_asm)?;
-        let dummy = font_class.new_object()?;
-        let font_type: Il2CppObject = dummy.invoke::<Il2CppObject>("GetType", ())?;
-
-        // 4. LoadAssetAsync_Internal(string, Type) — instance on AssetBundle
-        let m_load = resolve_method(ASM, CLASS_AB, "LoadAssetAsync_Internal")?;
-        let font_name = Il2CppString::new(name);
-        let req = unsafe {
-            invoke_method_inst_2(
-                m_load,
-                self.obj.raw_ptr(),
-                font_name.as_ptr(),
-                font_type.raw_ptr(),
-            )
-        };
-        if req.is_null() {
-            return Err(crate::Error::Hook("LoadAssetAsync returned null".into()));
-        }
-
-        // 5. get_allAssets() — instance on AssetBundleRequest
-        let m_all = resolve_method(ASM, CLASS_AREQ, "get_allAssets")?;
-        let all = unsafe { invoke_method_inst_0(m_all, req) };
-        if all.is_null() {
-            return Err(crate::Error::Hook("get_allAssets returned null".into()));
-        }
-
-        let arr = unsafe { Il2CppArray::<Il2CppObject>::from_raw(all) };
-        arr.get(0)
-            .ok_or_else(|| crate::Error::Hook("no asset in bundle".into()))
+    /// Load an asset by name and its managed type, e.g. `UnityEngine.Font`.
+    pub fn load_asset(&self, name: &str, type_class: &str) -> Result<Object> {
+        self.load_asset_as(name, &Class::find(type_class)?)
     }
-
-    /// Access the underlying managed object.
-    pub fn as_object(&self) -> &Il2CppObject {
-        &self.obj
+    pub fn load_asset_as(&self, name: &str, class: &Class) -> Result<Object> {
+        self.object.call(
+            ("LoadAsset", ["System.String", "System.Type"]),
+            (name, class.type_object()?),
+        )
     }
-
-    /// Consume the wrapper and return the raw object.
-    pub fn into_object(self) -> Il2CppObject {
-        self.obj
+    pub fn contains(&self, name: &str) -> Result<bool> {
+        self.object.call("Contains", (name,))
+    }
+    pub fn unload(&self, unload_loaded_objects: bool) -> Result<()> {
+        self.object.call("Unload", (unload_loaded_objects,))
+    }
+    pub fn as_object(&self) -> &Object {
+        &self.object
+    }
+    pub fn into_object(self) -> Object {
+        self.object
     }
 }
 
-// ── convenience function ──────────────────────────────────────────────────
+async fn wait_for(request: Object) -> Result<GcHandle> {
+    let root = request.root()?;
+    while !root.object().get::<bool>("isDone")? {
+        crate::coroutine::next_frame().await;
+    }
+    Ok(root)
+}
 
-/// Load a single asset from an in-memory AssetBundle.
-///
-/// Convenience wrapper around [`AssetBundle::load_from_memory`] +
-/// [`AssetBundle::load_asset`].
-///
-/// ```ignore
-/// let font = cleat::load_asset_from_memory(
-///     &data,
-///     "FGO-Main-Font-Mod",
-///     "UnityEngine.Font",
-///     "UnityEngine.TextRenderingModule.dll",
-/// )?;
-/// ```
 pub fn load_asset_from_memory(
     data: &[u8],
-    asset_name: &str,
+    name: &str,
     type_class: &str,
-    type_asm: &str,
-) -> Result<Il2CppObject> {
-    AssetBundle::load_from_memory(data)?.load_asset(asset_name, type_class, type_asm)
-}
-
-#[cfg(test)]
-mod tests {
-    // AssetBundle methods require a live IL2CPP runtime, so we only test
-    // that the module compiles correctly and constants are non-empty.
-
-    use super::*;
-
-    #[test]
-    fn constants_non_empty() {
-        assert!(!ASM.is_empty());
-        assert!(!CLASS_AB.is_empty());
-        assert!(!CLASS_REQ.is_empty());
-        assert!(!CLASS_AREQ.is_empty());
-    }
+    type_assembly: &str,
+) -> Result<Object> {
+    AssetBundle::load_from_memory(data)?
+        .load_asset_as(name, &Class::find_in(type_assembly, type_class)?)
 }

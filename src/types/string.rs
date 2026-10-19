@@ -22,7 +22,27 @@ pub struct Il2CppString {
     pub(crate) ptr: *mut bridge::structs::Il2cppString,
 }
 
+impl TryFrom<crate::Object> for Il2CppString {
+    type Error = Error;
+    fn try_from(object: crate::Object) -> Result<Self> {
+        if object.is_null() {
+            return Err(Error::NullObject);
+        }
+        let class = object.class()?;
+        if class.namespace() != "System" || class.name() != "String" {
+            return Err(Error::Bridge(format!(
+                "expected System.String, found {}.{}",
+                class.namespace(),
+                class.name()
+            )));
+        }
+        Ok(unsafe { Self::from_raw_ptr(object.raw_ptr()) })
+    }
+}
+
 unsafe impl Il2CppValueType for Il2CppString {
+    const IS_REFERENCE: bool = true;
+    const MANAGED_NAME: Option<&'static str> = Some("System.String");
     unsafe fn load_field(field: &Field) -> Result<Self> {
         let ptr = unsafe {
             field
@@ -39,17 +59,53 @@ unsafe impl Il2CppValueType for Il2CppString {
                 .map_err(Error::Bridge)
         }
     }
+
+    unsafe fn to_arg_ptr(&self) -> *mut c_void {
+        self.as_ptr()
+    }
 }
 
 impl Il2CppString {
     /// Allocate a new managed string from a Rust `&str`.
     pub fn new(s: &str) -> Self {
-        let ptr = bridge::structs::Il2cppString::new(s);
-        assert!(
-            !ptr.is_null(),
-            "Il2CppString::new returned null — is IL2CPP initialized?"
-        );
-        Self { ptr }
+        Self::try_new(s).expect("could not allocate managed string")
+    }
+
+    pub fn try_new(s: &str) -> Result<Self> {
+        Self::from_utf16(&s.encode_utf16().collect::<Vec<_>>())
+    }
+
+    /// Allocate from UTF-16 code units, preserving NULs and unpaired surrogates.
+    pub fn from_utf16(units: &[u16]) -> Result<Self> {
+        if !bridge::api::is_loaded() {
+            return Err(Error::Bridge("IL2CPP is not initialized".into()));
+        }
+        let len = i32::try_from(units.len())
+            .map_err(|_| Error::Bridge("string exceeds Int32 length".into()))?;
+        let ptr = unsafe { bridge::api::string_new_utf16(units.as_ptr(), len) };
+        if ptr.is_null() {
+            return Err(Error::NullObject);
+        }
+        Ok(Self { ptr: ptr.cast() })
+    }
+
+    pub fn is_null(&self) -> bool {
+        self.ptr.is_null()
+    }
+
+    pub fn as_object(&self) -> crate::Object {
+        unsafe { crate::Object::from_raw(self.as_ptr()) }
+    }
+
+    /// Copy the original UTF-16 units, without decoding or assuming byte offsets.
+    pub fn to_utf16(&self) -> Result<Vec<u16>> {
+        if self.is_null() {
+            return Err(Error::NullObject);
+        }
+        let string = unsafe { &*self.ptr };
+        let length = usize::try_from(string.length)
+            .map_err(|_| Error::Bridge("invalid managed string length".into()))?;
+        Ok(unsafe { std::slice::from_raw_parts(string.chars.as_ptr(), length) }.to_vec())
     }
 
     /// Returns the raw IL2CPP string pointer (for use with iCalls).
@@ -59,13 +115,19 @@ impl Il2CppString {
 
     /// Read the string contents into a Rust `String`.
     ///
-    /// Never panics. Returns `"<null>"` if the pointer is dead, or
-    /// `"<invalid UTF-16>"` on encoding issues.
+    /// Null returns "<null>"; malformed UTF-16 uses replacement characters.
+    /// Like other managed handles, this must refer to a live object.
     pub fn to_string_lossy(&self) -> String {
         if self.ptr.is_null() {
             return "<null>".into();
         }
-        unsafe { (*self.ptr).to_string() }.unwrap_or_else(|| "<invalid UTF-16>".into())
+        let string = unsafe { &*self.ptr };
+        if string.length < 0 {
+            return "<invalid length>".into();
+        }
+        String::from_utf16_lossy(unsafe {
+            std::slice::from_raw_parts(string.chars.as_ptr(), string.length as usize)
+        })
     }
 
     /// Length in UTF-16 code units (same as `string.Length` in C#).
@@ -73,7 +135,7 @@ impl Il2CppString {
         if self.ptr.is_null() {
             return 0;
         }
-        unsafe { (*self.ptr).length as usize }
+        usize::try_from(unsafe { (*self.ptr).length }).unwrap_or(0)
     }
 
     /// True when the string is empty (or the pointer is null).

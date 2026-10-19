@@ -1,30 +1,17 @@
-//! Desktop no-op stub — allows `cargo check` on non-Android platforms.
-
-use crate::Result;
-
-/// Desktop no-op hook handle.
+//! Unsupported platforms fail explicitly; no fake trampoline is returned.
+use crate::{Error, Result};
+use std::ffi::c_void;
 pub struct HookGuard;
-
 impl HookGuard {
-    /// No-op — logs a warning and returns `Ok`.
-    pub fn install(
-        _target: *const std::ffi::c_void,
-        _replace: *const std::ffi::c_void,
-    ) -> Result<Self> {
-        log::warn!("HookGuard::install called on non-Android platform — skipping");
-        Ok(Self)
+    /// # Safety
+    /// See the Android backend's `HookGuard::install` contract.
+    pub unsafe fn install(_target: *const c_void, _replace: *const c_void) -> Result<Self> {
+        Err(Error::UnsupportedPlatform("inline hooks require Android"))
     }
-
-    /// Returns a null trampoline pointer.
-    pub fn trampoline(&self) -> *const std::ffi::c_void {
+    pub fn trampoline(&self) -> *const c_void {
         std::ptr::null()
     }
-
-    /// No-op uninstall.
     pub fn uninstall(self) -> Result<()> {
         Ok(())
     }
 }
-
-unsafe impl Send for HookGuard {}
-unsafe impl Sync for HookGuard {}

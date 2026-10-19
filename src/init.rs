@@ -7,9 +7,9 @@ use std::time::Duration;
 
 /// Max retries waiting for the target image to be loaded.
 #[cfg(target_os = "android")]
-const MAX_RETRIES: u32 = 30;
+const MAX_RETRIES: u32 = 600;
 #[cfg(target_os = "android")]
-const RETRY_DELAY: Duration = Duration::from_secs(2);
+const RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// Bootstrap the cleat runtime.
 ///
@@ -26,16 +26,46 @@ pub fn init(target_image: &str, on_ready: impl FnOnce() + Send + 'static) {
 
     log::info!("cleat init: waiting for {target_image}...");
 
-    let c_name = CString::new(target_image).unwrap();
+    let Ok(c_name) = CString::new(target_image) else {
+        log::error!("target image contains a NUL byte");
+        return;
+    };
     let image = target_image.to_owned();
 
     thread::spawn(move || {
         for i in 0..=MAX_RETRIES {
-            let handle = unsafe { libc::dlopen(c_name.as_ptr(), libc::RTLD_NOLOAD) };
+            let handle =
+                unsafe { libc::dlopen(c_name.as_ptr(), libc::RTLD_NOW | libc::RTLD_NOLOAD) };
             if !handle.is_null() {
-                unsafe { libc::dlclose(handle) };
                 log::info!("cleat init: {image} found (attempt {i})");
-                il2cpp_bridge_rs::init(&image, on_ready);
+                let observer = if crate::hook::RuntimeObserver::is_ready() {
+                    None
+                } else {
+                    match unsafe { crate::hook::RuntimeObserver::install(handle) } {
+                        Ok(observer) => Some(observer),
+                        Err(error) => {
+                            log::error!("cleat init: {error}");
+                            unsafe { libc::dlclose(handle) };
+                            return;
+                        }
+                    }
+                };
+                for _ in 0..MAX_RETRIES {
+                    if crate::hook::RuntimeObserver::is_ready() {
+                        drop(observer);
+                        log::info!("cleat init: IL2CPP runtime ready");
+                        // A successful runtime call was observed on the game's
+                        // own thread; it is now valid to attach our worker.
+                        unsafe { il2cpp_bridge_rs::init(&image, on_ready) };
+                        unsafe { libc::dlclose(handle) };
+                        return;
+                    }
+                    thread::sleep(RETRY_DELAY);
+                }
+                log::error!(
+                    "cleat init: no successful IL2CPP startup/domain call observed within 60 seconds"
+                );
+                unsafe { libc::dlclose(handle) };
                 return;
             }
             if i < MAX_RETRIES {

@@ -1,242 +1,85 @@
-# cleat API 参考
+# cleat API
 
----
+本文对应仓库内的 0.3 API。可编译的完整示例位于 [examples](../../examples)，具体签名可用 `cargo doc --no-deps --open` 查看。
 
-## 入口宏
+## 入口与线程
 
-### `#[cleat::main]`
+`#[cleat::main]` 生成 `JNI_OnLoad`，保存 JavaVM，并在游戏完成 IL2CPP 初始化后运行入口。入口位于已附加的工作线程。安装 Hook、加载普通 Rust 配置可以在入口执行；场景、UI、AssetBundle 和 Unity 协程必须在主线程执行，例如目标游戏的 `Update` Hook。
 
-标记 Mod 入口函数。生成 `JNI_OnLoad` 符号供 Android 调用。
+自行创建的线程调用托管 API 前，持有 `ThreadGuard::attach()?`。Android Java 调用使用 `cleat::android::with_java`，它负责线程附加、本地引用帧及异常处理。原始 JNI 功能由重新导出的 `jni` crate 提供。
 
-```rust
-#[cleat::main]
-fn my_mod() -> cleat::Result<()> {
-    let klass = Il2CppClass::find("UnityEngine.Time")?;
-    let ts: f32 = klass.static_field_value("timeScale")?;
-    log::info!("timeScale = {ts}");
-    Ok(())
-}
-```
-
----
-
-## 类元数据 — `Il2CppClass`
-
-### 查找
-
-```rust
-let klass = Il2CppClass::find("UnityEngine.GameObject")?;
-let klass = Il2CppClass::find_with("MyType", "MyPlugin")?;
-```
-
-### 静态字段 / 方法 / 实例创建 / 泛型 / 类型谓词
-
-见内联 rustdoc — 0.1 的所有方法保持不变。
-
----
-
-## 托管对象 — `Il2CppObject`
-
-### 字段读写
-
-```rust
-let hp: i32 = obj.load("currentHealth")?;
-obj.store("currentHealth", 999)?;
-let hp_field = obj.field("currentHealth")?;  // 缓存句柄
-```
-
-### 方法调用
-
-```rust
-let hp: i32 = obj.invoke("get_HP", ())?;
-obj.invoke_void("SetHP", (999,))?;
-let data: Il2CppObject = obj.method("GetMasterData")?.inflate(&[&klass])?.invoke(())?;
-```
-
-### 底层偏移量访问
-
-```rust
-let entries = unsafe { obj.read_ptr_at(0x18)? };    // Dictionary.entries
-let count   = unsafe { obj.read_i32_at(0x20) };     // Dictionary.count
-```
-
----
-
-## 托管类型
-
-### `Il2CppString`
-
-```rust
-let s = Il2CppString::new("你好");
-s.to_string_lossy();            // → String
-s.len();                        // → usize
-s.as_ptr();                     // → *mut c_void
-```
-
-### `Il2CppArray<T>`
-
-```rust
-let arr = Il2CppArray::<i32>::new(&element_class, 10)?;
-arr.get(0);                    // → Option<T>
-arr.iter();                     // 迭代器
-arr.to_vec();                   // → Vec<T>
-arr.data_ptr();                 // → *const T
-```
-
-### `Il2CppList<T>`
-
-```rust
-let list: Il2CppList<i32> = obj.load("scores")?;
-list.len();                     // → usize
-list.get(0);                    // → Option<T>
-list.to_vec();                  // → Vec<T>
-```
-
-### `Il2CppDictionary<K, V>` *(0.2 新增)*
-
-`System.Collections.Generic.Dictionary<K, V>` 的 `#[repr(C)]` 内存映射。
-
-```rust
-let dict: Il2CppDictionary<*mut c_void, *mut c_void> = obj.load("lookup")?;
-
-dict.len();                              // → usize
-dict.is_empty();                         // → bool
-dict.iter();                             // → DictionaryIter<(K, V)>
-
-// 遍历所有条目（自动跳过未使用槽位 hashCode < 0）
-for (key, val) in dict.iter() {
-    // ...
-}
-
-// 底层 entries 数组访问
-let entries = dict.entries_array()?;     // → Il2CppArray<u8>
-```
-
-Entry 布局（64位）：`hashCode(4) + next(4) + key(K) + value(V)`，按指针对齐填充。
-对于 `Dictionary<string, object>`：每个 entry 24 字节。
-
----
-
-## 方法指针解析
-
-用于 Unity 引擎内部方法（`internal extern`、`[FreeFunction]`），这些方法
-可能无法通过 `il2cpp_runtime_invoke` 调用。通过类方法表解析——对**所有**
-绑定类型有效，包括 Unity 6 的 FreeFunction。
-
-### `cleat::resolve_method(assembly, class, method) -> Result<MethodPtr>`
-
-```rust
-let m = cleat::resolve_method(
-    "UnityEngine.AssetBundleModule.dll",
-    "UnityEngine.AssetBundle",
-    "LoadFromMemoryAsync_Internal",
-)?;
-```
-
-### `MethodPtr`
-
-携带 `methodPointer` + `MethodInfo*`。IL2CPP 调用约定尾部多一个 `MethodInfo*` 参数。
-
-### 静态调用
-
-```rust
-let r = unsafe { cleat::invoke_method_0(m) };
-let r = unsafe { cleat::invoke_method_2(m, a, b) };
-```
-
-### 实例调用
-
-```rust
-let r = unsafe { cleat::invoke_method_inst_0(m, this_ptr) };
-let r = unsafe { cleat::invoke_method_inst_2(m, this_ptr, a, b) };
-```
-
-> 普通 C# 方法请用 `Il2CppObject::invoke` / `Il2CppClass::invoke_static`。
-> `resolve_method` 仅用于 Unity 引擎内部方法。
-
----
-
-## Unity 高级封装
-
-### `AssetBundle` *(0.2 新增)*
-
-`UnityEngine.AssetBundle` 加载的高级封装。
-
-```rust
-let font = AssetBundle::load_from_memory(&data)?
-    .load_asset("FGO-Main-Font-Mod", "UnityEngine.Font", "UnityEngine.TextRenderingModule.dll")?;
-```
-
-### `cleat::load_asset_from_memory(data, asset_name, type_class, type_asm)`
-
-便捷函数：从内存中的 AssetBundle 加载单个资源。
-
-```rust
-let font = cleat::load_asset_from_memory(
-    &data,
-    "MyFont",
-    "UnityEngine.Font",
-    "UnityEngine.TextRenderingModule.dll",
-)?;
-```
-
----
-
-## Hook
-
-### `#[cleat::hook("程序集名", "类名", "方法名")]`
-
-```rust
-#[cleat::hook("Assembly-CSharp", "Player", "TakeDamage")]
-fn god_mode(this: &Il2CppObject, damage: i32) -> cleat::Result<()> {
-    god_mode::original(this, 0);
-    Ok(())
-}
-```
-
-生成：`fn_name::install()`、`fn_name::uninstall()`、`fn_name::original(...)`。
-
----
-
-## Trait
-
-### `Il2CppValueType` *(unsafe trait)*
-
-与 IL2CPP ABI 兼容的类型标记。要求 `Copy + 'static`。
-
-| 分类 | 类型 |
-|------|------|
-| 基本类型 | `i8`–`u64`, `f32`, `f64`, `bool` |
-| 数学 | `Vector2/3/4`, `Quaternion` |
-| 托管 | `Il2CppObject`, `Il2CppString`, `Il2CppList<T>`, `Il2CppDictionary<K,V>` |
-| 自定义 | 通过 `#[cleat::value_type]` |
-
-### `Args` *(unsafe trait)*
-
-元组 → FFI 指针数组。支持 0–16 元素的元组。
-
----
-
-## 错误类型
-
-| 变体 | 显示信息 |
-|------|---------|
-| `ClassNotFound(String)` | `class not found: {0}` |
-| `AssemblyNotFound(String)` | `assembly not found: {0}` |
-| `FieldNotFound(String)` | `field not found: {0}` |
-| `MethodNotFound(String)` | `method not found: {0}` |
-| `Bridge(String)` | `bridge error: {0}` |
-| `Hook(String)` | `hook error: {0}` |
-
----
-
-## Prelude
+## 查找、读取与调用
 
 ```rust
 use cleat::prelude::*;
+
+fn update(player: Object) -> Result<()> {
+    let health: i32 = player.get("health")?;
+    player.set("health", health + 100)?;
+    player.set("displayName", "御主")?;
+    player.call::<()>("Refresh", ())?;
+    let class = Class::find_in("Assembly-CSharp", "GameManager")?;
+    let _manager: Object = class.get("instance")?;
+    Ok(())
+}
 ```
 
-一键导入：`Il2CppClass`, `Il2CppObject`, `FieldHandle`, `MethodInfo`,
-`Il2CppString`, `Il2CppArray`, `Il2CppList`, `Il2CppDictionary`,
-`AssetBundle`, `load_asset_from_memory`,
-`Vector2/3/4`, `Quaternion`, `Error`, `Result`, `Args`, `Il2CppValueType`。
+`Class::find` 跨程序集查找，`find_in` 指定程序集；同名不明确时返回错误。`Object` 是 `Il2CppObject` 的别名，`Class` 是 `Il2CppClass` 的别名。`get` / `set` 支持字段及属性，`call` 接受参数元组，无参数为 `()`，单参数为 `(value,)`。
+
+指定重载时使用 `object.call::<()>(("SetValue", ["System.String"]), ("文本",))?`。可通过 `method` 缓存句柄，再调用 `invoke`。同参数数量但类型不同的方法不会被随意选中。泛型类与泛型方法使用 `generic`；实例方法可用 `virtual_method` 解析实际虚方法。
+
+`construct` 调用构造函数，`construct_with` 指定构造参数类型。`new_object` 只分配对象，不调用构造函数。`box_value` / `unbox` 用于值类型；`by_ref(&mut value)` 和 `out(&mut value)` 用于调用 ref/out 参数。原始指针和自定义值类型的布局仍由调用者保证。
+
+程序集、继承与接口可通过 `Assembly`、`parent`、`nested`、`interfaces` 访问。`property` 支持索引器；`event` 通过 add/remove 访问器操作；`Delegate` 保持委托对象的 GC 根。
+
+## Hook
+
+```rust
+use cleat::prelude::*;
+
+#[cleat::hook("UnityEngine.UI", "UnityEngine.UI.Text", "set_text")]
+fn text(this: &Object, value: Il2CppString) -> Result<()> {
+    let value = if value.to_string_lossy() == "Start" {
+        Il2CppString::try_new("开始")?
+    } else { value };
+    text::original(this, value)
+}
+```
+
+在入口调用 `text::install()?`。可省略程序集参数，使用 `#[cleat::hook("Namespace.Type", "Method")]`。原函数返回 `Result`；尚未安装时调用会返回错误。宏保留 IL2CPP 隐藏的 MethodInfo 参数，并校验签名。Hook 内的 panic/错误不会跨越原生 ABI 边界。
+
+`uninstall` 应在目标调用停止后执行；线程已经进入原生替换入口、尚未进入 Rust 回调时仍存在交接窗口。不要在目标方法持续并发调用期间依赖卸载无缝切换。宏暂不支持 ref/out 参数及值类型实例方法的 Hook；这些参数可用于反射调用。
+
+## 集合与对象寿命
+
+`Il2CppArray<T>` 支持带类型检查、边界检查和 GC 写屏障的读取与写入。`Il2CppList<T>` 提供 `get/set/push/remove/clear`；`snapshot()` 返回保留 GC 根的 `RootedArray<T>`，适合跨帧处理。`to_vec()` 中复制的托管对象包装本身不提供根。
+
+`Il2CppDictionary<K,V>` 的 `get/set/contains_key/remove/clear/iter` 调用运行时集合方法，不读取私有 entries/buckets/count 偏移。`get` 返回 `Result<Option<V>>`；迭代元素也是 `Result`，删除过的槽位和遍历时修改均由托管枚举器处理。AOT 裁剪导致相关方法缺失时会明确返回错误。
+
+`Object`、字符串和数组等包装只是托管指针，不阻止 GC。跨回调保存时持有 `object.root()?`，使用根的 `object()` 取回对象。GC 根并不提供线程同步；不要让未固定的对象在被回收后继续使用。
+
+## 跨帧执行与资源
+
+`CoroutineScheduler::spawn` 接受返回 `Result<()>` 的 future；在主线程每帧调用 `tick`。任务内可等待 `coroutine::next_frame()`、`wait_frames`、`wait_seconds`、`wait_realtime`、`wait_until` 和 `wait_for_operation`。保留任务句柄可取消任务、检查状态。调度器会隔离任务失败并防止重入；所有 tick 必须来自同一线程。
+
+`ManagedCoroutine::start` 启动已有的托管 IEnumerator；`start_method` 从方法创建枚举器。需显式调用 `stop` 停止 Unity 协程，丢弃句柄只释放根。
+
+`AssetBundle::load_from_memory_async` 和 `load_asset_async` 通过实际的异步请求等待 `isDone`，期间保留请求及资源所需的根。它们必须由主线程调度器驱动。同步 `load_from_file/load_from_memory/load_asset` 也可用，但部分游戏裁剪掉同步重载时应使用异步 API。
+
+## 可选 Unity 内部结构
+
+一般反射、文本 Hook、运行时集合和 Rust 帧调度不依赖私有类布局。Unity 6 使用 `unity-6000` 选择指针宽度的 GC 句柄 ABI，暂不支持类注入。
+
+新类、接口和虚方法注册，以及 Rust 实现的 Unity IEnumerator，需要选择一个互斥的布局 feature：
+
+| Feature | 布局范围 |
+|---|---|
+| `unity-2019-4` | Unity 2019.4 |
+| `unity-2020-3` | Unity 2020.3，补丁 20 及以上 |
+| `unity-2021-3` | Unity 2021.3 |
+| `unity-2022-3` | Unity 2022.3 |
+| `unity-2023-1` | Unity 2023.1 |
+
+在安全的初始化时机调用 `unsafe { InjectionRuntime::initialize()? }`，通过 `ClassBuilder` 注册类型；示例见 [injection.rs](../../examples/injection.rs)。实现会检查版本和关键布局；编译成功不能代替目标游戏验证。
+
+BNM 作为功能与 ABI 研究参考，未复制或编译其实现。现有类布局修改、新泛型类注册、Unity 6 类注入尚未提供；泛型共享/AOT 裁剪及游戏定制运行时仍需按目标验证。

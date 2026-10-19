@@ -5,6 +5,16 @@ use thiserror::Error;
 /// All the ways a cleat operation can fail.
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("unsupported platform: {0}")]
+    UnsupportedPlatform(&'static str),
+    #[error("ambiguous lookup: {0}")]
+    Ambiguous(String),
+    #[error("null managed object")]
+    NullObject,
+    #[error("property not found: {0}")]
+    PropertyNotFound(String),
+    #[error("event not found: {0}")]
+    EventNotFound(String),
     #[error("class not found: {0}")]
     ClassNotFound(String),
 

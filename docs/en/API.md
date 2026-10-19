@@ -1,264 +1,75 @@
-# cleat API Reference
+# cleat API
 
----
+This guide describes the repository's 0.3 API. See [examples](../../examples) for complete programs and run `cargo doc --no-deps --open` for signatures.
 
-## Entry Point
+## Entry point and threads
 
-### `#[cleat::main]`
+`#[cleat::main]` exports `JNI_OnLoad`, retains the JavaVM and waits for the game's IL2CPP initialization. The entry runs on an attached worker thread. Install hooks and read Rust configuration there. Access scenes, UI, AssetBundles and Unity coroutines from a Unity main-thread callback, such as a game's Update hook.
 
-Marks the mod entry function. Generates a `JNI_OnLoad` symbol that Android
-calls via `System.loadLibrary`.
+Threads created by your code must retain `ThreadGuard::attach()?` before managed calls. On Android, `cleat::android::with_java` manages attachment, local reference frames and exceptions using the re-exported jni crate.
 
-```rust
-#[cleat::main]
-fn my_mod() -> cleat::Result<()> {
-    let klass = Il2CppClass::find("UnityEngine.Time")?;
-    let ts: f32 = klass.static_field_value("timeScale")?;
-    log::info!("timeScale = {ts}");
-    Ok(())
-}
-```
-
-Generated code:
-1. Calls `android_logger::init_once(...)` — log output to logcat
-2. Calls `il2cpp_bridge_rs::init("libil2cpp.so", ...)`
-3. Runs your function when IL2CPP metadata is ready
-
----
-
-## Class Metadata — `Il2CppClass`
-
-`#[derive(Clone)]`, `Send + Sync`.
-
-### Lookup
-
-#### `Il2CppClass::find(name: &str) -> Result<Self>`
-
-Finds a class by fully-qualified name including namespace.
-
-```rust
-let klass = Il2CppClass::find("UnityEngine.GameObject")?;
-```
-
-#### `Il2CppClass::find_with(name: &str, assembly_name: &str) -> Result<Self>`
-
-Finds a class within a specific assembly.
-
-```rust
-let klass = Il2CppClass::find_with("MyPlugin.MyType", "MyPlugin")?;
-```
-
-### Static Fields / Methods / Instance Creation / Generics / Type Predicates
-
-See inline rustdoc — all methods from 0.1 are unchanged.
-
----
-
-## Managed Object — `Il2CppObject`
-
-### Field Access
-
-```rust
-let hp: i32 = obj.load("currentHealth")?;
-obj.store("currentHealth", 999)?;
-let hp_field = obj.field("currentHealth")?;  // cached handle
-```
-
-### Method Calls
-
-```rust
-let hp: i32 = obj.invoke("get_HP", ())?;
-obj.invoke_void("SetHP", (999,))?;
-let data: Il2CppObject = obj.method("GetMasterData")?.inflate(&[&klass])?.invoke(())?;
-```
-
-### Low-level Offset Access
-
-```rust
-let entries = unsafe { obj.read_ptr_at(0x18)? };    // Dictionary.entries
-let count   = unsafe { obj.read_i32_at(0x20) };     // Dictionary.count
-```
-
----
-
-## Managed Types
-
-### `Il2CppString`
-
-```rust
-let s = Il2CppString::new("Hello");
-s.to_string_lossy();            // → String
-s.len();                        // → usize
-s.as_ptr();                     // → *mut c_void
-let s2: Il2CppString = "Hello".into();
-```
-
-### `Il2CppArray<T>`
-
-```rust
-let arr = Il2CppArray::<i32>::new(&element_class, 10)?;
-arr.get(0);                    // → Option<T>
-arr.iter();                     // Iterator
-arr.to_vec();                   // → Vec<T>
-arr.data_ptr();                 // → *const T (first element)
-unsafe { arr.as_slice() };     // → &[T]
-```
-
-### `Il2CppList<T>`
-
-```rust
-let list: Il2CppList<i32> = obj.load("scores")?;
-list.len();                     // → usize
-list.get(0);                    // → Option<T>
-list.to_vec();                  // → Vec<T>
-```
-
-### `Il2CppDictionary<K, V>` *(new in 0.2)*
-
-Direct `#[repr(C)]` memory mapping of `System.Collections.Generic.Dictionary<K, V>`.
-
-```rust
-let dict: Il2CppDictionary<*mut c_void, *mut c_void> = obj.load("lookup")?;
-
-dict.len();                              // → usize
-dict.is_empty();                         // → bool
-dict.iter();                             // → DictionaryIter<(K, V)>
-
-// Walk all entries (skips unused slots where hashCode < 0)
-for (key, val) in dict.iter() {
-    // ...
-}
-
-// Low-level entries array access
-let entries = dict.entries_array()?;     // → Il2CppArray<u8>
-```
-
-Entry layout (64-bit): `hashCode(4) + next(4) + key(K) + value(V)`, padded to
-pointer alignment. For `Dictionary<string, object>`: 24 bytes per entry.
-
----
-
-## Method Pointer Resolution
-
-For Unity engine internal methods (`internal extern`, `[FreeFunction]`) that
-may not work through `il2cpp_runtime_invoke`. Goes through the class method
-table — works for **all** binding types including Unity 6 FreeFunction.
-
-### `cleat::resolve_method(assembly, class, method) -> Result<MethodPtr>`
-
-```rust
-let m = cleat::resolve_method(
-    "UnityEngine.AssetBundleModule.dll",
-    "UnityEngine.AssetBundle",
-    "LoadFromMemoryAsync_Internal",
-)?;
-```
-
-### `MethodPtr`
-
-Carries the raw `methodPointer` + `MethodInfo*`. The IL2CPP calling
-convention appends a trailing `MethodInfo*` parameter.
-
-### Static invokers
-
-```rust
-let r = unsafe { cleat::invoke_method_0(m) };
-let r = unsafe { cleat::invoke_method_2(m, a, b) };
-```
-
-### Instance invokers
-
-```rust
-let r = unsafe { cleat::invoke_method_inst_0(m, this_ptr) };
-let r = unsafe { cleat::invoke_method_inst_2(m, this_ptr, a, b) };
-```
-
-> Prefer `Il2CppObject::invoke` / `Il2CppClass::invoke_static` for regular
-> C# methods. Use `resolve_method` only for Unity engine internals.
-
----
-
-## Unity Wrappers
-
-### `AssetBundle` *(new in 0.2)*
-
-High-level wrapper for `UnityEngine.AssetBundle` loading.
-
-```rust
-let font = AssetBundle::load_from_memory(&data)?
-    .load_asset("FGO-Main-Font-Mod", "UnityEngine.Font", "UnityEngine.TextRenderingModule.dll")?;
-```
-
-### `cleat::load_asset_from_memory(data, asset_name, type_class, type_asm)`
-
-Convenience: load a single asset from an in-memory bundle.
-
-```rust
-let font = cleat::load_asset_from_memory(
-    &data,
-    "MyFont",
-    "UnityEngine.Font",
-    "UnityEngine.TextRenderingModule.dll",
-)?;
-```
-
----
-
-## Hooks
-
-### `#[cleat::hook("AssemblyName", "ClassName", "MethodName")]`
-
-```rust
-#[cleat::hook("Assembly-CSharp", "Player", "TakeDamage")]
-fn god_mode(this: &Il2CppObject, damage: i32) -> cleat::Result<()> {
-    god_mode::original(this, 0);
-    Ok(())
-}
-```
-
-Generated: `fn_name::install()`, `fn_name::uninstall()`, `fn_name::original(...)`.
-
----
-
-## Traits
-
-### `Il2CppValueType` *(unsafe trait)*
-
-Types ABI-compatible with IL2CPP. Requires `Copy + 'static`.
-
-| Category | Types |
-|----------|-------|
-| Primitives | `i8`–`u64`, `f32`, `f64`, `bool` |
-| Math | `Vector2/3/4`, `Quaternion` |
-| Managed | `Il2CppObject`, `Il2CppString`, `Il2CppList<T>`, `Il2CppDictionary<K,V>` |
-| Custom | Via `#[cleat::value_type]` |
-
-### `Args` *(unsafe trait)*
-
-Tuple → FFI pointer arrays. Supports 0–16 element tuples.
-
----
-
-## Error Types
-
-| Variant | Display |
-|---------|---------|
-| `ClassNotFound(String)` | `class not found: {0}` |
-| `AssemblyNotFound(String)` | `assembly not found: {0}` |
-| `FieldNotFound(String)` | `field not found: {0}` |
-| `MethodNotFound(String)` | `method not found: {0}` |
-| `Bridge(String)` | `bridge error: {0}` |
-| `Hook(String)` | `hook error: {0}` |
-
----
-
-## Prelude
+## Reflection and calls
 
 ```rust
 use cleat::prelude::*;
+
+fn update(player: Object) -> Result<()> {
+    let health: i32 = player.get("health")?;
+    player.set("health", health + 100)?;
+    player.set("displayName", "Master")?;
+    player.call::<()>("Refresh", ())?;
+    let game = Class::find_in("Assembly-CSharp", "GameManager")?;
+    let _manager: Object = game.get("instance")?;
+    Ok(())
+}
 ```
 
-Imports: `Il2CppClass`, `Il2CppObject`, `FieldHandle`, `MethodInfo`,
-`Il2CppString`, `Il2CppArray`, `Il2CppList`, `Il2CppDictionary`,
-`AssetBundle`, `load_asset_from_memory`,
-`Vector2/3/4`, `Quaternion`, `Error`, `Result`, `Args`, `Il2CppValueType`.
+`Class::find` searches assemblies; `find_in` selects an assembly. Ambiguous names return errors. `Class` and `Object` alias `Il2CppClass` and `Il2CppObject`. `get/set` accept fields or properties. Calls take tuples: `()` or `(value,)` for zero or one argument.
+
+Select an overload with `object.call::<()>(("SetValue", ["System.String"]), ("text",))?`. Cache a method through `method`, then use `invoke`. Same-arity overloads are not arbitrarily selected. `generic` specializes classes or methods; `virtual_method` resolves an instance's virtual implementation.
+
+`construct` calls a constructor; `construct_with` selects parameter types. `new_object` only allocates. Use `box_value/unbox` for values and `by_ref(&mut value)` / `out(&mut value)` for ref/out calls. Custom value layouts and raw pointers remain the caller's responsibility.
+
+`Assembly`, `parent`, `nested` and `interfaces` expose metadata. `property` supports indexers; `event` uses add/remove accessors; `Delegate` retains the delegate's GC root.
+
+## Hooks
+
+```rust
+use cleat::prelude::*;
+
+#[cleat::hook("UnityEngine.UI", "UnityEngine.UI.Text", "set_text")]
+fn text(this: &Object, value: Il2CppString) -> Result<()> {
+    let value = if value.to_string_lossy() == "Start" {
+        Il2CppString::try_new("开始")?
+    } else { value };
+    text::original(this, value)
+}
+```
+
+Call `text::install()?` from the entry. The assembly argument is optional. `original` returns an error before installation. The macro validates signatures, preserves the hidden IL2CPP MethodInfo argument and contains panics/errors at the native boundary.
+
+Uninstall only after calls to the target have stopped. A native-to-Rust entry window remains outside the invocation snapshot; do not rely on seamless concurrent uninstallation. The hook macro does not support ref/out parameters or value-type instance methods, although reflection calls support ref/out arguments.
+
+## Collections and lifetimes
+
+`Il2CppArray<T>` checks bounds and types and uses GC write barriers. `Il2CppList<T>` provides get/set/push/remove/clear. `snapshot()` returns `RootedArray<T>` for work spanning frames; managed handles copied into `to_vec()` are not independently rooted.
+
+`Il2CppDictionary<K,V>` uses managed collection methods rather than private buckets/entries/count offsets. `get` returns `Result<Option<V>>`; `iter` yields fallible entries and honors managed enumerator behavior for deleted slots and concurrent modification. Missing AOT methods produce errors.
+
+Object, string and array wrappers do not prevent collection. Retain `object.root()?` when storing objects across callbacks and retrieve them through the root's `object()`. GC roots do not synchronize object contents.
+
+## Coroutines and assets
+
+`CoroutineScheduler::spawn` accepts a future returning `Result<()>`. Call `tick` once per main-thread frame. Tasks can await `coroutine::next_frame`, `wait_frames`, `wait_seconds`, `wait_realtime`, `wait_until` and `wait_for_operation`. Handles expose cancellation and status. Task failures are isolated; reentrant ticks are rejected, and all ticks must use the same thread.
+
+`ManagedCoroutine::start` runs an existing managed IEnumerator; `start_method` invokes a method to create one. Explicitly call `stop` to stop Unity's coroutine; dropping the handle only releases roots.
+
+`AssetBundle::load_from_memory_async` and `load_asset_async` poll real requests until completion while retaining necessary roots. Drive them with the main-thread scheduler. Synchronous load_from_file/load_from_memory/load_asset methods are also available where the game has not stripped those overloads.
+
+## Unity internals and BNM coverage
+
+General reflection, text hooks, runtime collections and Rust scheduling do not depend on private class layouts. Unity 6 requires `unity-6000` for pointer-sized GC handles and currently has no class-injection profile.
+
+New class/interface/virtual-method registration and Rust Unity IEnumerator generators require exactly one feature: `unity-2019-4`, `unity-2020-3` (patch 20+), `unity-2021-3`, `unity-2022-3` or `unity-2023-1`. Call `unsafe { InjectionRuntime::initialize()? }` at a suitable initialization point, then register through `ClassBuilder`; see [injection.rs](../../examples/injection.rs). Runtime version/layout checks do not replace testing in the target game.
+
+BNM is a capability and ABI reference; its implementation is not copied or compiled. Existing-class layout mutation, new generic class registration and Unity 6 class injection are not provided. Generic sharing, AOT stripping and customized runtimes require target-specific verification.

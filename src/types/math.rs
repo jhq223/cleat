@@ -10,12 +10,16 @@ use super::Il2CppValueType;
 use crate::{Error, Result};
 
 // Re-export so users don't need to pull in il2cpp_bridge_rs themselves.
-pub use il2cpp_bridge_rs::structs::{Quaternion, Vector2, Vector3, Vector4};
+pub use il2cpp_bridge_rs::structs::math::math::{Bounds, Ray, Rect};
+pub use il2cpp_bridge_rs::structs::{
+    Color, Matrix3x3, Matrix4x4, Quaternion, Vector2, Vector3, Vector4,
+};
 
 macro_rules! impl_value_type_math {
     ($($t:ty),*) => {
         $(
             unsafe impl Il2CppValueType for $t {
+                const MANAGED_NAME: Option<&'static str> = Some(concat!("UnityEngine.", stringify!($t)));
                 unsafe fn load_field(field: &Field) -> Result<Self> {
                     unsafe { field.get_value::<$t>().map_err(Error::Bridge) }
                 }
@@ -28,4 +32,6 @@ macro_rules! impl_value_type_math {
     };
 }
 
-impl_value_type_math!(Vector2, Vector3, Vector4, Quaternion);
+impl_value_type_math!(
+    Vector2, Vector3, Vector4, Quaternion, Color, Matrix3x3, Matrix4x4, Bounds, Ray, Rect
+);

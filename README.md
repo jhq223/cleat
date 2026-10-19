@@ -1,88 +1,118 @@
 # cleat
 
-Android IL2CPP game modding toolkit.
+[中文](README_zh.md) · [API guide](docs/en/API.md) · [Build guide](docs/en/BUILD.md) · [Modification history](CHANGELOG.md)
 
-[中文](README_zh.md) | [API](docs/en/API.md) | [Build](docs/en/BUILD.md)
+cleat is a Rust toolkit for Android Unity IL2CPP mods. Read and change managed
+fields and properties, call methods, replace text and fonts, hook native methods,
+and run work over multiple frames.
 
-## What
+The project implementation is Rust. Android hooks link the official Frida Gum
+native library for ARM, ARM64, x86 and x86_64. BNM is a reference for capabilities
+and ABI research; its code is not bundled.
 
-Rust bindings over IL2CPP. You get a **safe** API for field access, method
-calls, and inline hooks, plus **typed collection wrappers** for `List<T>` and
-`Dictionary<K,V>` so you never need to hand-compute memory offsets.
+## Start with a translation hook
 
-```rust
-use cleat::prelude::*;
-
-#[cleat::main]
-fn my_mod() -> cleat::Result<()> {
-    // Type-safe field access — no unsafe needed.
-    let klass = Il2CppClass::find("Player")?;
-    let hp: i32 = klass.static_field_value("maxHealth")?;
-
-    Ok(())
-}
-
-#[cleat::hook("Assembly-CSharp", "Player", "TakeDamage")]
-fn god_mode(this: &Il2CppObject, damage: i32) -> cleat::Result<()> {
-    god_mode::original(this, 0);
-    Ok(())
-}
-
-// Typed Dictionary access (0.2+) — no more manual offset math.
-fn read_lookup(obj: &Il2CppObject) {
-    let dict: Il2CppDictionary<*mut std::ffi::c_void, *mut std::ffi::c_void> =
-        obj.load("lookup").unwrap();
-    for (key, val) in dict.iter() {
-        // ...
-    }
-}
-```
-
-## Setup
+Check out this repository next to your mod, then use a local dependency:
 
 ```toml
-# Cargo.toml
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-cleat = "0.2"
+cleat = { path = "../cleat" }
 ```
 
 ```rust
-// src/lib.rs
 use cleat::prelude::*;
 
 #[cleat::main]
-fn main() -> cleat::Result<()> {
-    let klass = Il2CppClass::find("UnityEngine.Time")?;
-    let time: f32 = klass.static_field_value("timeScale")?;
-    log::info!("timeScale = {}", time);
+fn start() -> Result<()> {
+    translate::install()
+}
 
-    Ok(())
+#[cleat::hook("UnityEngine.UI", "UnityEngine.UI.Text", "set_text")]
+fn translate(this: &Object, text: Il2CppString) -> Result<()> {
+    let translated = match text.to_string_lossy().as_str() {
+        "Start Game" => Il2CppString::try_new("开始游戏")?,
+        "Settings" => Il2CppString::try_new("设置")?,
+        _ => text,
+    };
+    translate::original(this, translated)
 }
 ```
 
-```bash
-cargo ndk -t arm64-v8a -o ./target/jniLibs build --release
+Build with `cargo ndk -t arm64-v8a build --release`, then load the resulting
+library through Android's `System.loadLibrary`. Choose the ABI of the game's
+native libraries, including when the game runs through an emulator's ARM
+translation layer. The [translation example](examples/translation.rs) is a
+buildable library. This repository's 0.3 API is not yet a published crate.
+
+## Everyday operations
+
+```rust
+use cleat::prelude::*;
+fn example(player: Object) -> Result<()> {
+let hp: i32 = player.get("health")?;
+player.set("health", hp + 100)?;
+player.set("displayName", "御主")?;
+player.call::<()>("Refresh", ())?;
+
+let game = Class::find_in("Assembly-CSharp", "GameManager")?;
+let manager: Object = game.get("instance")?;
+let _retained = manager.root()?; // keep this root while storing the object
+Ok(())
+}
 ```
 
-## Docs
+`get` and `set` accept fields or properties. Calls use argument tuples; overloads
+with the same argument count require explicit parameter types. Failures return
+`Result` rather than silently choosing an overload.
 
-| | |
+## Capabilities
+
+| Area | APIs |
 |---|---|
-| [API Reference](docs/en/API.md) | Full API |
-| [Build Guide](docs/en/BUILD.md) | Toolchain setup and compilation |
-| [API 参考](docs/zh/API.md) | API (Chinese) |
-| [编译指南](docs/zh/BUILD.md) | Build (Chinese) |
+| Reflection | Assemblies, classes, nested classes, fields, properties, methods, interfaces and hierarchy |
+| Managed operations | Construction, boxing/unboxing, generic specialization, virtual dispatch, delegates and event accessors |
+| Collections | Arrays, lists and dictionaries; checked writes and runtime-backed dictionary enumeration |
+| Translation/resources | Rust-string inputs, UTF-16 access, text hooks, AssetBundle/font loading |
+| Hooks | Frida Gum replacement, original calls, installation/uninstallation |
+| Coroutines | Rust frame scheduler and existing managed IEnumerator support |
+| Optional Unity internals | Registered classes/fields/methods/interfaces, virtual overrides, Rust IEnumerator and Unity yield phases |
 
-## Requires
+The [API guide](docs/en/API.md) describes remaining differences from BNM.
+Class registration and native IEnumerator support require exactly one Unity
+feature: `unity-2019-4`, `unity-2020-3` (patch 20+), `unity-2021-3`,
+`unity-2022-3` or `unity-2023-1`. These are internal ABI profiles, not a promise
+that every game build has the same native call patterns. Unity 2023 also needs
+its profile for the changed GC handle ABI. Unity 6 uses `unity-6000` for public
+APIs and GC handles; class injection is not yet available for that version.
 
-- Rust nightly
-- Android NDK r26+
-- cargo-ndk ≥ 3.0
-- libshadowhook.so (runtime, packed in APK)
+## Runtime requirements
 
-## License
+`#[cleat::main]` runs after IL2CPP initialization on an attached worker thread.
+Install hooks and load ordinary Rust data there. Use a Unity main-thread callback
+for scene objects, UI, AssetBundles and coroutine startup.
 
-MIT
+Managed wrappers are unrooted pointers. Keep `GcHandle`/an object's `root()`
+when retaining an object across callbacks or allocations without another managed
+owner. Rooting does not make engine APIs thread-safe. Custom value layouts and
+raw pointers remain the caller's responsibility.
+
+Gum smoke tests have passed on MuMu Android 15 in native x86_64 and ARM64 via
+Houdini, including concurrent calls and 20 uninstall/reinstall cycles. This
+checks the hook backend; version-specific class injection needs separate
+in-game verification.
+
+## Development
+
+```sh
+cargo test --workspace
+cargo test --workspace --features unity-2022-3
+cargo clippy -p cleat -p cleat-macros --all-targets --features unity-2022-3 -- -D warnings
+cargo ndk -t arm64-v8a build --example injection --features unity-2022-3
+```
+
+Do not use `--all-features`: Unity profiles are mutually exclusive. The bridge is
+maintained in [crates/il2cpp-bridge-rs](crates/il2cpp-bridge-rs/UPSTREAM.md); builds
+do not depend on an upstream Git branch. See [third-party notices](THIRD_PARTY_NOTICES.md).

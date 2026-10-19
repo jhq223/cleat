@@ -2,7 +2,7 @@
 //!
 //! | Attribute               | What it does                                          |
 //! |-------------------------|-------------------------------------------------------|
-//! | `#[cleat::main]`        | Wraps your function in the Android `load()` entry point. |
+//! | `#[cleat::main]`        | Generates Android's `JNI_OnLoad` entry point. |
 //! | `#[cleat::hook]`        | Creates an inline hook with install / uninstall helpers. |
 //! | `#[cleat::value_type]`  | Derives `Il2CppValueType` for a `#[repr(C)]` struct.  |
 
@@ -12,15 +12,16 @@
 
 mod hook_macro;
 mod main_macro;
+mod managed_macro;
 mod type_macro;
 
 use proc_macro::TokenStream;
 
 /// Wraps your function in the Android entry point.
 ///
-/// Generates a `#[no_mangle] pub extern "C" fn load()` that Android will
-/// call when the library is loaded. Inside, it boots android_logger and
-/// the IL2CPP bridge, then runs your code.
+/// Generates `JNI_OnLoad`, called by Java's `System.loadLibrary`.
+/// Initialization waits for IL2CPP on a worker thread, then calls this function
+/// on an attached worker. Defer Unity engine operations to a main-thread hook.
 #[proc_macro_attribute]
 pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
     main_macro::main_macro(attr, item)
@@ -41,7 +42,16 @@ pub fn hook(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Apply this, then you can read and write the struct directly through
 /// IL2CPP fields and method calls.
+/// The author must ensure the struct is blittable and exactly matches the
+/// managed fields, size and alignment. The macro cannot prove that contract.
 #[proc_macro_attribute]
 pub fn value_type(attr: TokenStream, item: TokenStream) -> TokenStream {
     type_macro::value_type_macro(attr, item)
+}
+
+/// Expose a Rust callback in an injected managed class. Requires a unity-* feature.
+/// The generated module provides definition() for ClassBuilder::method.
+#[proc_macro_attribute]
+pub fn managed_method(attr: TokenStream, item: TokenStream) -> TokenStream {
+    managed_macro::expand(attr, item)
 }

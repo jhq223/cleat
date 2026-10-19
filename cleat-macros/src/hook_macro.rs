@@ -1,368 +1,254 @@
-//! `#[cleat::hook]` — inline hook proc macro.
-//!
-//! Generates all the plumbing for hooking an IL2CPP method via ShadowHook:
-//! a C-ABI wrapper that the hook engine calls, an `original()` trampoline
-//! to invoke the real method, and `install()` / `uninstall()` helpers.
-//!
-//! # What signatures work
-//!
-//! * Instance methods — first param is `&Il2CppObject` or `&mut Il2CppObject`.
-//! * Static methods — no `this`.
-//! * Return type — `Result<()>` or `Result<T>` (anything `Default`).
-//! * Extra params passed through the `Args` trait.
-//!
-//! # Error behaviour
-//!
-//! The generated C wrapper must not panic (it's called from native code),
-//! so when the user's function returns `Err(...)`:
-//!
-//! * **Returning `Result<T>`** — the wrapper logs the error and returns
-//!   `T::default()` (e.g. `0` for `i32`). The game code gets a zero value
-//!   instead of crashing.
-//! * **Returning `Result<()>`** — the wrapper just logs the error.
-//!
-//! This is deliberate. Hooking is a "best effort" thing — if your hook
-//! fails the game should keep running.
-
+//! IL2CPP hooks backed by Frida Gum.
 use proc_macro::TokenStream;
-use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{
-    parse_macro_input, FnArg, ItemFn, Pat, PatType, ReturnType, Type,
+    FnArg, ItemFn, LitStr, Pat, ReturnType, Token, Type,
+    parse::{Parse, ParseStream},
+    parse_macro_input,
+    punctuated::Punctuated,
 };
 
-// ── helper functions ──────────────────────────────────────────────────────
-
-/// Test whether a type is `&Il2CppObject` or `&mut Il2CppObject`.
-///
-/// Returns `Some(true)` for `&mut`, `Some(false)` for `&`, `None` otherwise.
-fn is_il2cpp_object_ref(ty: &Type) -> Option<bool> {
-    if let Type::Reference(ref_ty) = ty {
-        if let Type::Path(type_path) = &*ref_ty.elem {
-            if type_path
-                .path
-                .segments
-                .last()
-                .map(|s| s.ident == "Il2CppObject")
-                .unwrap_or(false)
-            {
-                return Some(ref_ty.mutability.is_some());
-            }
-        }
-    }
-    None
+struct Target {
+    assembly: Option<LitStr>,
+    class: LitStr,
+    method: LitStr,
+    params: Option<Vec<LitStr>>,
 }
-
-/// Peel `Result<T, E>` and return the inner type `T`.
-///
-/// Returns `Some((has_value, token_stream))`. `has_value = false` when
-/// `T = ()` (the empty tuple — a void-ish result).
-fn extract_result_inner(ty: &Type) -> Option<(bool, TokenStream2)> {
-    if let Type::Path(type_path) = ty {
-        let seg = type_path.path.segments.last()?;
-        if seg.ident != "Result" {
-            return None;
-        }
-        if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
-            let first = args.args.first()?;
-            if let syn::GenericArgument::Type(t) = first {
-                let is_unit = matches!(t, Type::Tuple(tup) if tup.elems.is_empty());
-                Some((!is_unit, quote! { #t }))
+impl Parse for Target {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let first: LitStr = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let second: LitStr = input.parse()?;
+        let (assembly, class, method) = if input.peek(Token![,]) {
+            let ahead = input.fork();
+            ahead.parse::<Token![,]>()?;
+            if ahead.peek(LitStr) {
+                input.parse::<Token![,]>()?;
+                (Some(first), second, input.parse()?)
             } else {
-                None
+                (None, first, second)
             }
         } else {
-            None
-        }
-    } else {
-        None
-    }
-}
-
-/// Pull non-`this` parameter names and types from the function input list.
-fn extract_params<'a>(
-    inputs: &'a syn::punctuated::Punctuated<FnArg, syn::token::Comma>,
-    has_this: bool,
-) -> Vec<(&'a syn::Ident, &'a Type)> {
-    let mut params = Vec::new();
-    for (i, arg) in inputs.iter().enumerate() {
-        if i == 0 && has_this {
-            continue;
-        }
-        if let FnArg::Typed(PatType { pat, ty, .. }) = arg {
-            if let Pat::Ident(pat_ident) = &**pat {
-                params.push((&pat_ident.ident, &**ty));
+            (None, first, second)
+        };
+        let mut params = None;
+        if !input.is_empty() {
+            input.parse::<Token![,]>()?;
+            if !input.is_empty() {
+                let content;
+                syn::bracketed!(content in input);
+                params = Some(
+                    Punctuated::<LitStr, Token![,]>::parse_terminated(&content)?
+                        .into_iter()
+                        .collect(),
+                );
+                if !input.is_empty() {
+                    input.parse::<Token![,]>()?;
+                }
             }
         }
+        Ok(Self {
+            assembly,
+            class,
+            method,
+            params,
+        })
     }
-    params
 }
 
-// ── the macro itself ──────────────────────────────────────────────────────
+pub(crate) fn object_ref(ty: &Type) -> Option<bool> {
+    let Type::Reference(reference) = ty else {
+        return None;
+    };
+    let Type::Path(path) = &*reference.elem else {
+        return None;
+    };
+    matches!(
+        path.path.segments.last()?.ident.to_string().as_str(),
+        "Il2CppObject" | "Object"
+    )
+    .then_some(reference.mutability.is_some())
+}
 
 pub fn hook_macro(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let input_fn = parse_macro_input!(item as ItemFn);
-
-    // ── parse the attribute: #[cleat::hook("Assembly", "Class", "Method")] ──
-
-    let attr_str = attr.to_string();
-    let parts: Vec<String> = attr_str
-        .split(',')
-        .map(|s| s.trim().trim_matches('"').to_string())
-        .collect();
-
-    if parts.len() != 3 {
-        return syn::Error::new(
-            proc_macro::Span::call_site().into(),
-            "expected #[cleat::hook(\"assembly\", \"class\", \"method\")]",
-        )
-        .to_compile_error()
-        .into();
+    let target = parse_macro_input!(attr as Target);
+    let function = parse_macro_input!(item as ItemFn);
+    match expand(target, function) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
     }
+}
 
-    let assembly_lit = proc_macro2::Literal::string(&parts[0]);
-    let class_lit    = proc_macro2::Literal::string(&parts[1]);
-    let method_lit   = proc_macro2::Literal::string(&parts[2]);
-
-    // ── inspect user function signature ──
-
-    let fn_name    = input_fn.sig.ident.clone();
-    let inner_name = format_ident!("{}_inner", fn_name);
-    let mod_name   = fn_name.clone();
-    let fn_body    = &input_fn.block;
-
-    // `this` detection
-    let mut has_this    = false;
-    let mut is_this_mut = false;
-    if let Some(first_arg) = input_fn.sig.inputs.first() {
-        if let FnArg::Typed(PatType { ty, .. }) = first_arg {
-            if let Some(mut_ref) = is_il2cpp_object_ref(ty) {
-                has_this    = true;
-                is_this_mut = mut_ref;
-            }
-        }
+fn expand(target: Target, function: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
+    let sig = &function.sig;
+    if sig.asyncness.is_some()
+        || sig.unsafety.is_some()
+        || sig.variadic.is_some()
+        || !sig.generics.params.is_empty()
+    {
+        return Err(syn::Error::new_spanned(
+            sig,
+            "hooks must be non-generic, synchronous safe functions returning cleat::Result<T>",
+        ));
     }
-
-    // The rest of the params
-    let params       = extract_params(&input_fn.sig.inputs, has_this);
-    let param_idents: Vec<_> = params.iter().map(|(id, _)| *id).collect();
-    let param_types:  Vec<_> = params.iter().map(|(_, ty)| *ty).collect();
-
-    // Return type
-    let (has_ret, ret_ty) = match &input_fn.sig.output {
-        ReturnType::Default => (false, quote! { () }),
-        ReturnType::Type(_, ty) => {
-            if let Some((has_val, inner)) = extract_result_inner(ty) {
-                (has_val, inner)
-            } else {
-                (false, quote! { () })
-            }
-        }
+    let ReturnType::Type(_, return_type) = &sig.output else {
+        return Err(syn::Error::new_spanned(
+            sig,
+            "hook must return cleat::Result<T>",
+        ));
     };
-
-    // The user's original signature, renamed to _inner.
-    let mut inner_sig = input_fn.sig.clone();
-    inner_sig.ident = inner_name.clone();
-
-    // ── build codegen fragments ──
-
-    let inner_fn = quote! {
-        #[allow(non_snake_case)]
-        #inner_sig {
-            #fn_body
-        }
+    let Type::Path(path) = &**return_type else {
+        return Err(syn::Error::new_spanned(
+            return_type,
+            "expected cleat::Result<T>",
+        ));
     };
-
-    // C wrapper parameter list.
-    //
-    // `this` is received **by value** as `cleat::Il2CppObject` because:
-    //  - at the C ABI level it's `Il2CppObject*` (a single 8-byte pointer)
-    //  - `cleat::Il2CppObject` is `#[repr(transparent)]` over that pointer,
-    //    so the bytes land correctly in the struct without needing `&*`.
-    // Using `*mut cleat::Il2CppObject` would cause `&*this` to read the
-    // *first field* (klass) of the managed object instead of the object
-    // pointer itself.
-    let wrapper_params_c: TokenStream2 = if has_this {
-        if param_idents.is_empty() {
-            quote! { this: cleat::Il2CppObject }
-        } else {
-            quote! { this: cleat::Il2CppObject, #(#param_idents: #param_types),* }
-        }
-    } else {
-        quote! { #(#param_idents: #param_types),* }
+    let segment = path.path.segments.last().unwrap();
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return Err(syn::Error::new_spanned(
+            return_type,
+            "expected cleat::Result<T>",
+        ));
     };
-
-    let wrapper_ret: TokenStream2 = if has_ret {
-        quote! { -> #ret_ty }
-    } else {
-        quote! {}
+    let Some(syn::GenericArgument::Type(ret)) = args.args.first() else {
+        return Err(syn::Error::new_spanned(
+            return_type,
+            "expected cleat::Result<T>",
+        ));
     };
-
-    // Trampoline function pointer type (what we transmute the guard's
-    // trampoline pointer into before calling through it).
-    let trampoline_type: TokenStream2 = if has_this {
-        if has_ret {
-            if param_types.is_empty() {
-                quote! { unsafe extern "C" fn(cleat::Il2CppObject) -> #ret_ty }
-            } else {
-                quote! { unsafe extern "C" fn(cleat::Il2CppObject, #(#param_types),*) -> #ret_ty }
-            }
-        } else {
-            if param_types.is_empty() {
-                quote! { unsafe extern "C" fn(cleat::Il2CppObject) }
-            } else {
-                quote! { unsafe extern "C" fn(cleat::Il2CppObject, #(#param_types),*) }
-            }
-        }
-    } else {
-        if has_ret {
-            quote! { unsafe extern "C" fn(#(#param_types),*) -> #ret_ty }
-        } else {
-            quote! { unsafe extern "C" fn(#(#param_types),*) }
-        }
-    };
-
-    // How the C wrapper calls super::inner.
-    // `this` is `cleat::Il2CppObject` by value — just borrow it directly.
-    let inner_call_args: TokenStream2 = if has_this {
-        let deref = if is_this_mut {
-            quote! { &mut this }
-        } else {
-            quote! { &this }
+    if segment.ident != "Result" {
+        return Err(syn::Error::new_spanned(
+            return_type,
+            "expected cleat::Result<T>",
+        ));
+    }
+    let mut names = Vec::new();
+    let mut types = Vec::new();
+    let mut this_mut = None;
+    for (index, arg) in sig.inputs.iter().enumerate() {
+        let FnArg::Typed(arg) = arg else {
+            return Err(syn::Error::new_spanned(arg, "self is not supported"));
         };
-        if param_idents.is_empty() {
-            quote! { super::#inner_name(#deref) }
+        let Pat::Ident(name) = &*arg.pat else {
+            return Err(syn::Error::new_spanned(&arg.pat, "use a named parameter"));
+        };
+        if name.by_ref.is_some() || name.subpat.is_some() {
+            return Err(syn::Error::new_spanned(name, "use a plain named parameter"));
+        }
+        if index == 0 {
+            this_mut = object_ref(&arg.ty);
+        }
+        if index == 0 && this_mut.is_some() {
+            continue;
+        }
+        names.push(&name.ident);
+        types.push(&arg.ty);
+    }
+    let count = names.len();
+    let indices: Vec<_> = (0..count).collect();
+    let Target {
+        assembly,
+        class,
+        method,
+        params,
+    } = target;
+    let resolve_class = match assembly {
+        Some(assembly) => quote! { cleat::Class::find_in(#assembly, #class)? },
+        None => quote! { cleat::Class::find(#class)? },
+    };
+    let selector = if let Some(params) = params {
+        if params.len() != count {
+            return Err(syn::Error::new_spanned(
+                sig,
+                "managed parameter type count must match the hook signature (excluding this)",
+            ));
+        }
+        quote! { (#method, [#(#params),*] as [&str; #count]) }
+    } else {
+        quote! { (#method, #count) }
+    };
+    let name = &sig.ident;
+    let inner_name = format_ident!("{}_inner", name);
+    let mut inner = function.clone();
+    inner.sig.ident = inner_name.clone();
+    let vis = &function.vis;
+    let attrs = function.attrs.iter().filter(|attr| {
+        ["cfg", "cfg_attr", "doc", "allow", "warn", "deny", "forbid"]
+            .iter()
+            .any(|name| attr.path().is_ident(name))
+    });
+    let has_this = this_mut.is_some();
+    let this_param = this_mut.map(|mutable| {
+        if mutable {
+            quote! { mut this: cleat::Il2CppObject, }
         } else {
-            quote! { super::#inner_name(#deref, #(#param_idents),*) }
+            quote! { this: cleat::Il2CppObject, }
         }
-    } else {
-        quote! { super::#inner_name(#(#param_idents),*) }
-    };
-
-    // The user-facing original() signature (friendly borrows, not C types)
-    let original_params: TokenStream2 = if has_this {
-        let ref_kw = if is_this_mut { quote! { &mut } } else { quote! { & } };
-        if param_idents.is_empty() {
-            quote! { this: #ref_kw cleat::Il2CppObject }
+    });
+    let this_type = has_this.then(|| quote! { cleat::Il2CppObject, });
+    let this_original = this_mut.map(|mutable| {
+        if mutable {
+            quote! { this: &mut cleat::Il2CppObject, }
         } else {
-            quote! { this: #ref_kw cleat::Il2CppObject, #(#param_idents: #param_types),* }
+            quote! { this: &cleat::Il2CppObject, }
         }
-    } else {
-        quote! { #(#param_idents: #param_types),* }
-    };
-
-    let original_ret: TokenStream2 = if has_ret {
-        quote! { -> #ret_ty }
-    } else {
-        quote! {}
-    };
-
-    // How original() calls through the trampoline.
-    // `original()` receives `this: &Il2CppObject` — deref & pass by value.
-    let trampoline_call_args: TokenStream2 = if has_this {
-        if param_idents.is_empty() {
-            quote! { *this }
+    });
+    let borrow_this = this_mut.map(|mutable| {
+        if mutable {
+            quote! { &mut this, }
         } else {
-            quote! { *this, #(#param_idents),* }
+            quote! { &this, }
         }
-    } else {
-        quote! { #(#param_idents),* }
-    };
+    });
+    let pass_this = has_this.then(|| quote! { *this, });
+    Ok(quote! {
+        #inner
+        #(#attrs)*
+        #vis mod #name {
+            #[allow(unused_imports)]
+            use super::*;
+            static HOOK: cleat::HookSlot = cleat::HookSlot::new();
 
-    // Wrapper body: logs errors, returns Default on failure.
-    let wrapper_body: TokenStream2 = if has_ret {
-        quote! {
-            match #inner_call_args {
-                Ok(v) => v,
-                Err(e) => {
-                    log::error!("{}: {e}", stringify!(#fn_name));
-                    Default::default()
-                }
-            }
-        }
-    } else {
-        quote! {
-            if let Err(e) = #inner_call_args {
-                log::error!("{}: {e}", stringify!(#fn_name));
-            }
-        }
-    };
-
-    // original() body: transmute guard trampoline → call through it.
-    let original_body: TokenStream2 = if has_ret {
-        quote! {
-            let guard = HOOK.get().expect("hook not installed");
-            let trampoline: #trampoline_type =
-                unsafe { std::mem::transmute(guard.trampoline()) };
-            unsafe { trampoline(#trampoline_call_args) }
-        }
-    } else {
-        quote! {
-            let guard = HOOK.get().expect("hook not installed");
-            let trampoline: #trampoline_type =
-                unsafe { std::mem::transmute(guard.trampoline()) };
-            unsafe { trampoline(#trampoline_call_args); }
-        }
-    };
-
-    // ── stitch everything together ──
-
-    let expanded = quote! {
-        #inner_fn
-
-        pub(crate) mod #mod_name {
-            use std::sync::OnceLock;
-            use cleat::prelude::*;
-            use cleat::HookGuard;
-
-            static HOOK: OnceLock<HookGuard> = OnceLock::new();
-
-            /// Install the hook (safe to call multiple times — subsequent
-            /// calls are no-ops).
+            /// Install once; repeated calls are idempotent.
+            /// The Rust signature must match the selected managed method's ABI.
             pub fn install() -> cleat::Result<()> {
-                if HOOK.get().is_some() {
-                    return Ok(());
+                if HOOK.is_installed() { return Ok(()); }
+                let class = #resolve_class;
+                let method = class.method(#selector)?;
+                if #has_this && class.is_valuetype() {
+                    return Err(cleat::Error::Hook("use a raw hook for value-type instance methods".into()));
                 }
+                if method.is_static() == #has_this {
+                    return Err(cleat::Error::Hook("hook this parameter does not match method staticness".into()));
+                }
+                #(method.validate_parameter::<#types>(#indices)?;)*
+                method.validate_hook_return::<#ret>()?;
+                unsafe { HOOK.install(method.native()?, __wrapper as *const std::ffi::c_void) }
+            }
+            /// Remove the hook after any active Rust callbacks finish.
+            pub fn uninstall() -> cleat::Result<()> { HOOK.uninstall() }
+            pub fn is_installed() -> bool { HOOK.is_installed() }
 
-                let class  = cleat::Il2CppClass::find_with(#class_lit, #assembly_lit)?;
-                let method = class.method_ptr(#method_lit)?;
-
-                let guard = unsafe {
-                    HookGuard::install(
-                        method.function,
-                        __wrapper as *const std::ffi::c_void,
-                    )?
-                };
-
-                HOOK.set(guard)
-                    .map_err(|_| cleat::Error::Hook("already installed".into()))
+            /// Call the original, preserving the caller's hidden MethodInfo.
+            pub fn original(#this_original #(#names: #types),*) -> cleat::Result<#ret> {
+                HOOK.with_original(|method| {
+                    let trampoline: unsafe extern "C" fn(#this_type #(#types,)* *mut std::ffi::c_void) -> #ret =
+                        unsafe { std::mem::transmute(method.function) };
+                    unsafe { trampoline(#pass_this #(#names,)* method.method_info) }
+                })
             }
 
-            /// Remove the hook and restore the original code.
-            pub fn uninstall() -> cleat::Result<()> {
-                // Safety: IL2CPP runs single-threaded — no concurrent mutation.
-                let taken = unsafe {
-                    let ptr = &raw const HOOK as *mut OnceLock<HookGuard>;
-                    (*ptr).take()
-                };
-                taken
-                    .map(|g| g.uninstall())
-                    .unwrap_or(Ok(()))
-            }
-
-            /// Call the original (unhooked) method through the trampoline.
-            pub fn original(#original_params) #original_ret {
-                #original_body
-            }
-
-            /// C callback. Signature must match the hooked method exactly —
-            /// ShadowHook transfers control here when the game calls the
-            /// patched function.
-            unsafe extern "C" fn __wrapper(#wrapper_params_c) #wrapper_ret {
-                #wrapper_body
+            unsafe extern "C" fn __wrapper(#this_param #(#names: #types,)* __method_info: *mut std::ffi::c_void) -> #ret {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _invocation = HOOK.enter(__method_info)?;
+                    super::#inner_name(#borrow_this #(#names),*)
+                }));
+                match result {
+                    Ok(Ok(value)) => value,
+                    Ok(Err(error)) => { cleat::__log::error!("{}: {error}", stringify!(#name)); Default::default() }
+                    Err(_) => { cleat::__log::error!("{} panicked", stringify!(#name)); Default::default() }
+                }
             }
         }
-    };
-
-    TokenStream::from(expanded)
+    })
 }
