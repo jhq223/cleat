@@ -17,14 +17,11 @@ $env:ANDROID_NDK_HOME = 'D:\Android\Sdk\ndk\27.0.12077973'
 
 ## Create a module
 
-Place the cleat repository next to your module:
+Create a library project:
 
-```text
-workspace/
-├── cleat/
-└── my-mod/
-    ├── Cargo.toml
-    └── src/lib.rs
+```sh
+cargo new --lib my-mod
+cd my-mod
 ```
 
 In `my-mod/Cargo.toml`:
@@ -39,7 +36,7 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-cleat = { path = "../cleat" }
+cleat = "0.3.1"
 ```
 
 Save the [translation example from the README](../../README.md#start-with-a-translation-hook) as `src/lib.rs`, then build from the module directory:
@@ -66,7 +63,7 @@ Install each target with `rustup target add <target>` before building it.
 Select one feature matching the game's Unity version:
 
 ```toml
-cleat = { path = "../cleat", features = ["unity-2022-3"] }
+cleat = { version = "0.3.1", features = ["unity-2022-3"] }
 ```
 
 | Feature | Unity version | APIs |

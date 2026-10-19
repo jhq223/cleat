@@ -9,14 +9,14 @@ Hook 使用 Frida Gum，支持 Android ARM、ARM64、x86 和 x86_64。
 
 ## 从文本替换开始
 
-将此仓库放在 Mod 项目旁边，通过本地路径引用：
+在 Mod 的 `Cargo.toml` 中添加依赖：
 
 ```toml
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-cleat = { path = "../cleat" }
+cleat = "0.3.1"
 ```
 
 ```rust

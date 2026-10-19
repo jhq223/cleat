@@ -17,14 +17,11 @@ $env:ANDROID_NDK_HOME = 'D:\Android\Sdk\ndk\27.0.12077973'
 
 ## 创建模块
 
-将 cleat 仓库和模块放在同一目录下：
+创建库项目：
 
-```text
-workspace/
-├── cleat/
-└── my-mod/
-    ├── Cargo.toml
-    └── src/lib.rs
+```sh
+cargo new --lib my-mod
+cd my-mod
 ```
 
 `my-mod/Cargo.toml`：
@@ -39,7 +36,7 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-cleat = { path = "../cleat" }
+cleat = "0.3.1"
 ```
 
 将 [README 中的文本替换示例](../../README_zh.md#从文本替换开始)保存为 `src/lib.rs`，在模块目录执行：
@@ -66,7 +63,7 @@ ABI 与游戏原生库保持一致。模拟器通过 ARM 转译运行游戏时�
 在依赖中选择游戏对应的 feature，每次启用一个：
 
 ```toml
-cleat = { path = "../cleat", features = ["unity-2022-3"] }
+cleat = { version = "0.3.1", features = ["unity-2022-3"] }
 ```
 
 | Feature | Unity 版本 | 功能 |

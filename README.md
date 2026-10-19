@@ -10,14 +10,14 @@ Hooks use Frida Gum on Android ARM, ARM64, x86 and x86_64.
 
 ## Start with a translation hook
 
-Check out this repository next to your mod, then use a local dependency:
+Add cleat to your mod's `Cargo.toml`:
 
 ```toml
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-cleat = { path = "../cleat" }
+cleat = "0.3.1"
 ```
 
 ```rust
