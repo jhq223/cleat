@@ -1,11 +1,11 @@
 [package]
-name = "il2cpp-bridge-rs"
-version = "0.1.4"
+name = "cleat-il2cpp"
+version = "0.1.0"
 edition = "2021"
-description = "Rust library for Unity IL2CPP runtime introspection — resolve classes, invoke methods, and interact with the IL2CPP VM at runtime"
+description = "IL2CPP runtime bindings and metadata support for cleat"
 license = "MIT"
-repository = "https://github.com/Batchhh/il2cpp-bridge-rs"
-publish = false
+repository = "https://github.com/jhq223/cleat"
+readme = "README.md"
 keywords = ["il2cpp", "unity", "gamedev", "game-modding", "reverse-engineering"]
 categories = ["external-ffi-bindings", "game-engines"]
 

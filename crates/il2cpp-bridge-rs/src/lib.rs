@@ -3,7 +3,7 @@
 
 //! Runtime-first IL2CPP integration for Rust.
 //!
-//! `il2cpp-bridge-rs` is designed for code already running inside a process that
+//! `cleat-il2cpp` is designed for code already running inside a process that
 //! has Unity's IL2CPP runtime loaded. It resolves IL2CPP exports at runtime,
 //! builds a metadata cache, and exposes higher-level wrappers for common tasks
 //! such as:
@@ -31,7 +31,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use il2cpp_bridge_rs::{api, init};
+//! use cleat_il2cpp::{api, init};
 //! use std::ffi::c_void;
 //!
 //! // Call only after the game's IL2CPP initialization has completed.

@@ -5,7 +5,7 @@
 - Imported: 2026-10-19
 - Original license: MIT, retained in [LICENSE](LICENSE)
 
-This crate is maintained within the cleat workspace as a private path dependency.
+This crate is maintained within the cleat workspace and published as `cleat-il2cpp`.
 
 Local changes cover native argument widths, GC
 handle types, thread attachment ownership, array/string and field handling,

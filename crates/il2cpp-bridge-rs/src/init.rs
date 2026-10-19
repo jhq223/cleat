@@ -51,7 +51,7 @@ const CACHE_INIT_RETRY_DELAY: Duration = Duration::from_secs(3);
 /// # Example
 ///
 /// ```no_run
-/// use il2cpp_bridge_rs::{api, init};
+/// use cleat_il2cpp::{api, init};
 ///
 /// # unsafe {
 /// init("GameAssembly", || {

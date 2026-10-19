@@ -1,5 +1,10 @@
 # Modification history
 
+## 0.3.1
+
+- Publish the maintained runtime crate as `cleat-il2cpp` and update `cleat-macros` to 0.2.0.
+- Add build instructions and examples for method calls, collections, coroutines and fonts.
+
 ## 0.3.0
 
 ### Runtime and build

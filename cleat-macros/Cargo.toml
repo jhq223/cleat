@@ -1,6 +1,6 @@
 [package]
 name = "cleat-macros"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Proc macros for cleat — Android IL2CPP game modding toolkit"
 authors = ["jhq223 <jhq223@gmail.com>"]
