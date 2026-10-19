@@ -1,75 +1,232 @@
-# cleat API
+# API
 
-This guide describes the repository's 0.3 API. See [examples](../../examples) for complete programs and run `cargo doc --no-deps --open` for signatures.
+[中文](../zh/API.md) · [Building](BUILD.md) · [Examples](../../examples)
 
-## Entry point and threads
+Replace names such as `Game.Player` and `health` with types and members from your game. Run `cargo doc --no-deps --open` for full signatures.
 
-`#[cleat::main]` exports `JNI_OnLoad`, retains the JavaVM and waits for the game's IL2CPP initialization. The entry runs on an attached worker thread. Install hooks and read Rust configuration there. Access scenes, UI, AssetBundles and Unity coroutines from a Unity main-thread callback, such as a game's Update hook.
-
-Threads created by your code must retain `ThreadGuard::attach()?` before managed calls. On Android, `cleat::android::with_java` manages attachment, local reference frames and exceptions using the re-exported jni crate.
-
-## Reflection and calls
+## Read and change objects
 
 ```rust
 use cleat::prelude::*;
 
-fn update(player: Object) -> Result<()> {
-    let health: i32 = player.get("health")?;
-    player.set("health", health + 100)?;
+fn update_player(player: Object) -> Result<()> {
+    let hp: i32 = player.get("health")?;
+    player.set("health", hp + 100)?;
     player.set("displayName", "Master")?;
     player.call::<()>("Refresh", ())?;
-    let game = Class::find_in("Assembly-CSharp", "GameManager")?;
-    let _manager: Object = game.get("instance")?;
     Ok(())
 }
 ```
 
-`Class::find` searches assemblies; `find_in` selects an assembly. Ambiguous names return errors. `Class` and `Object` alias `Il2CppClass` and `Il2CppObject`. `get/set` accept fields or properties. Calls take tuples: `()` or `(value,)` for zero or one argument.
+`get` and `set` accept fields and properties. Pass Rust strings directly to `set` and `call`. Use Rust return types such as `i32`, `f32`, `bool`, `Il2CppString` or `Object`; C# `void` corresponds to `()`.
 
-Select an overload with `object.call::<()>(("SetValue", ["System.String"]), ("text",))?`. Cache a method through `method`, then use `invoke`. Same-arity overloads are not arbitrarily selected. `generic` specializes classes or methods; `virtual_method` resolves an instance's virtual implementation.
-
-`construct` calls a constructor; `construct_with` selects parameter types. `new_object` only allocates. Use `box_value/unbox` for values and `by_ref(&mut value)` / `out(&mut value)` for ref/out calls. Custom value layouts and raw pointers remain the caller's responsibility.
-
-`Assembly`, `parent`, `nested` and `interfaces` expose metadata. `property` supports indexers; `event` uses add/remove accessors; `Delegate` retains the delegate's GC root.
-
-## Hooks
+Access static members through `Class`:
 
 ```rust
 use cleat::prelude::*;
 
+fn manager() -> Result<Object> {
+    Class::find_in("Assembly-CSharp", "Game.GameManager")?.get("instance")
+}
+```
+
+`Class::find("Game.GameManager")` searches all assemblies. Use `find_in` to select an assembly when a name is ambiguous.
+
+## Call methods
+
+Arguments go in tuples: `()` for none, `(value,)` for one. Select overloads by their C# parameter types:
+
+```rust
+use cleat::prelude::*;
+
+fn set_title(label: Object) -> Result<()> {
+    label.call::<()>(("SetText", ["System.String"]), ("Start Game",))
+}
+```
+
+For repeated calls, retain the `MethodInfo` from `object.method(...)` and call `invoke`. `method.virtual_method()` resolves the bound object's virtual implementation.
+
+Use `by_ref` and `out` for reference parameters:
+
+```rust
+use cleat::prelude::*;
+
+fn parse_number(text: &str) -> Result<Option<i32>> {
+    let mut number = 0i32;
+    let parsed: bool = Class::find("System.Int32")?.call(
+        ("TryParse", ["System.String", "System.Int32&"]),
+        (text, out(&mut number)),
+    )?;
+    Ok(parsed.then_some(number))
+}
+```
+
+## Construction and generics
+
+`construct` allocates an object and calls its constructor. Use `construct_with` to select a constructor overload. For example, create `List<string>`:
+
+```rust
+use cleat::prelude::*;
+
+fn string_list() -> Result<Object> {
+    let string = Class::find("System.String")?;
+    let list = Class::find("System.Collections.Generic.List`1")?.generic(&[&string])?;
+    list.construct(())
+}
+```
+
+Generic methods use `method.generic(&[&class])`. Use `Class::box_value` and `Object::unbox` for boxing and unboxing value types.
+
+## Replace text
+
+```rust
+use cleat::prelude::*;
+
+#[cleat::main]
+fn start() -> Result<()> {
+    text::install()
+}
+
 #[cleat::hook("UnityEngine.UI", "UnityEngine.UI.Text", "set_text")]
 fn text(this: &Object, value: Il2CppString) -> Result<()> {
-    let value = if value.to_string_lossy() == "Start" {
-        Il2CppString::try_new("开始")?
-    } else { value };
+    let value = match value.to_string_lossy().as_str() {
+        "Start Game" => Il2CppString::try_new("开始游戏")?,
+        "Settings" => Il2CppString::try_new("设置")?,
+        _ => value,
+    };
     text::original(this, value)
 }
 ```
 
-Call `text::install()?` from the entry. The assembly argument is optional. `original` returns an error before installation. The macro validates signatures, preserves the hidden IL2CPP MethodInfo argument and contains panics/errors at the native boundary.
+The macro takes an assembly, type and method name. The assembly is optional: `#[cleat::hook("Game.Player", "Start")]`. `text::original` calls the original method, and `text::install` installs the hook. Call `text::uninstall()` after calls to the target have stopped.
 
-Uninstall only after calls to the target have stopped. A native-to-Rust entry window remains outside the invocation snapshot; do not rely on seamless concurrent uninstallation. The hook macro does not support ref/out parameters or value-type instance methods, although reflection calls support ref/out arguments.
+Match the target's parameter and return types. The macro accepts ordinary parameters, static methods and reference-type instance methods. Receive the instance as `this: &Object`.
 
-## Collections and lifetimes
+## Collections
 
-`Il2CppArray<T>` checks bounds and types and uses GC write barriers. `Il2CppList<T>` provides get/set/push/remove/clear. `snapshot()` returns `RootedArray<T>` for work spanning frames; managed handles copied into `to_vec()` are not independently rooted.
+Read arrays, lists and dictionaries from managed fields or method results:
 
-`Il2CppDictionary<K,V>` uses managed collection methods rather than private buckets/entries/count offsets. `get` returns `Result<Option<V>>`; `iter` yields fallible entries and honors managed enumerator behavior for deleted slots and concurrent modification. Missing AOT methods produce errors.
+```rust
+use cleat::prelude::*;
 
-Object, string and array wrappers do not prevent collection. Retain `object.root()?` when storing objects across callbacks and retrieve them through the root's `object()`. GC roots do not synchronize object contents.
+fn read_items(inventory: Object) -> Result<Vec<(i32, i32)>> {
+    let counts: Il2CppDictionary<i32, i32> = inventory.get("itemCounts")?;
+    let count = counts.get(1001)?.unwrap_or(0);
+    counts.set(1001, count + 1)?;
+    counts.iter()?.collect()
+}
+```
 
-## Coroutines and assets
+| Type | Common operations |
+|---|---|
+| `Il2CppArray<T>` | `len`, `get`, `set`, `iter`, `from_slice` |
+| `Il2CppList<T>` | `len`, `get`, `set`, `push`, `remove`, `clear`, `snapshot` |
+| `Il2CppDictionary<K, V>` | `len`, `get`, `set`, `remove`, `iter` |
 
-`CoroutineScheduler::spawn` accepts a future returning `Result<()>`. Call `tick` once per main-thread frame. Tasks can await `coroutine::next_frame`, `wait_frames`, `wait_seconds`, `wait_realtime`, `wait_until` and `wait_for_operation`. Handles expose cancellation and status. Task failures are isolated; reentrant ticks are rejected, and all ticks must use the same thread.
+Dictionary `get` returns `Result<Option<V>>`, and each iterator entry is a `Result`. Use a list's `snapshot()` for traversal across frames; its `RootedArray<T>` keeps the array and its elements alive.
 
-`ManagedCoroutine::start` runs an existing managed IEnumerator; `start_method` invokes a method to create one. Explicitly call `stop` to stop Unity's coroutine; dropping the handle only releases roots.
+## Object lifetimes
 
-`AssetBundle::load_from_memory_async` and `load_asset_async` poll real requests until completion while retaining necessary roots. Drive them with the main-thread scheduler. Synchronous load_from_file/load_from_memory/load_asset methods are also available where the game has not stripped those overloads.
+When storing an object across callbacks, retain its GC root and access the object through `root.object()`:
 
-## Unity internals and BNM coverage
+```rust
+use cleat::prelude::*;
 
-General reflection, text hooks, runtime collections and Rust scheduling do not depend on private class layouts. Unity 6 requires `unity-6000` for pointer-sized GC handles and currently has no class-injection profile.
+fn refresh_later(player: Object, scheduler: &CoroutineScheduler) -> Result<CoroutineTask> {
+    let player = player.root()?;
+    Ok(scheduler.spawn(async move {
+        coroutine::next_frame().await;
+        player.object().call::<()>("Refresh", ())
+    }))
+}
+```
 
-New class/interface/virtual-method registration and Rust Unity IEnumerator generators require exactly one feature: `unity-2019-4`, `unity-2020-3` (patch 20+), `unity-2021-3`, `unity-2022-3` or `unity-2023-1`. Call `unsafe { InjectionRuntime::initialize()? }` at a suitable initialization point, then register through `ClassBuilder`; see [injection.rs](../../examples/injection.rs). Runtime version/layout checks do not replace testing in the target game.
+Dropping the root ends its hold on the object. Use `GcHandle::pinned` when native code retains an object's address; `object.root()` already creates a pinned root.
 
-BNM is a capability and ABI reference; its implementation is not copied or compiled. Existing-class layout mutation, new generic class registration and Unity 6 class injection are not provided. Generic sharing, AOT stripping and customized runtimes require target-specific verification.
+## Coroutines
+
+From a Unity main-thread callback, install a `CoroutineRunner` on a MonoBehaviour with an `Update` method:
+
+```rust
+use cleat::prelude::*;
+
+fn start_tasks(owner: Object) -> Result<CoroutineRunner> {
+    let runner = CoroutineRunner::install(owner)?;
+    runner.spawn(async {
+        coroutine::next_frame().await;
+        coroutine::wait_seconds(0.5).await?;
+        Ok(())
+    });
+    Ok(runner)
+}
+```
+
+Retain the runner to execute tasks after that object's `Update`. Dropping it cancels tasks and uninstalls the hook; drop it after the object has stopped updating. If you already have an Update hook, use `CoroutineScheduler` and call `tick()` once per frame.
+
+| Wait for | Usage |
+|---|---|
+| Next frame | `next_frame().await` |
+| A number of frames | `wait_frames(10).await` |
+| Game time | `wait_seconds(0.5).await?` |
+| Real time | `wait_realtime(Duration::from_secs(1)).await` |
+| A condition | `wait_until(|| object.get("ready")).await?` |
+| An asynchronous operation | `wait_for_operation(operation).await?` |
+
+The task handle returned by `spawn` provides `cancel()` and `status()`. Start an existing managed IEnumerator with `ManagedCoroutine::start`, or call an IEnumerator-returning method with `start_method`. Call `stop()` to stop it.
+
+## Load a font
+
+Load an AssetBundle in a main-thread coroutine, then assign the font to a text object:
+
+```rust
+use cleat::prelude::*;
+
+async fn replace_font(label: GcHandle, bytes: Vec<u8>) -> Result<()> {
+    let bundle = AssetBundle::load_from_memory_async(&bytes).await?;
+    let font = bundle.load_asset_async("MyFont", "UnityEngine.Font").await?;
+    label.object().set("font", font)?;
+    bundle.unload(false)
+}
+```
+
+Run this task with `runner.spawn(...)` or `scheduler.spawn(...)`. `unload(false)` releases the bundle container while retaining loaded assets. Synchronous loading uses `load_from_file`, `load_from_memory` and `load_asset`.
+
+## Register classes
+
+Choose a feature with class registration from the [version table](BUILD.md#unity-version). Call `unsafe { InjectionRuntime::initialize()? }` on Unity's main thread after initialization, then register types with `ClassBuilder`:
+
+```rust
+use cleat::injection::{ClassBuilder, InjectionRuntime};
+use cleat::prelude::*;
+
+fn register_controller(runtime: &InjectionRuntime) -> Result<Class> {
+    ClassBuilder::new(
+        "Assembly-CSharp",
+        "MyMod.Controller",
+        &Class::find("UnityEngine.MonoBehaviour")?,
+    )
+    .field::<f32>("speed")?
+    .register(runtime)
+}
+```
+
+Define managed methods with `#[cleat::managed_method("Awake")]` and add them with `.method(function::definition()?)`. See [injection.rs](../../examples/injection.rs) for component registration and `UnityCoroutine`. Its yield operations include `end_of_frame`, `fixed_update`, `seconds` and existing managed yield objects.
+
+`InjectionRuntime::initialize` requires the game's IL2CPP ABI to match the selected feature. Keep the module loaded while its registered types are in use.
+
+## Entry point and threads
+
+`#[cleat::main]` runs after IL2CPP initialization on an attached worker thread. Install hooks and read configuration there. Run scene, UI, AssetBundle and Unity coroutine operations in a main-thread callback.
+
+On threads you create, retain the guard from `ThreadGuard::attach()?` for the duration of managed calls. For Android Java calls, use `cleat::android::with_java`; its closure provides access to the re-exported `jni` API.
+
+## More APIs
+
+| Operation | API |
+|---|---|
+| Assemblies and type relationships | `Assembly`, `Class::parent`, `nested`, `interfaces` |
+| Properties and indexers | `property`, `get_with`, `set_with` |
+| Delegates | `Delegate::new`, `invoke`, `combine`, `remove` |
+| Events | `event`, `add`, `remove` |
+| Unity math types | `Vector2`, `Vector3`, `Quaternion`, `Color`, `Rect` and others |
+| Custom value types | `#[repr(C)]` and `#[cleat::value_type("Game.Type")]` |

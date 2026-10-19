@@ -6,9 +6,7 @@ cleat is a Rust toolkit for Android Unity IL2CPP mods. Read and change managed
 fields and properties, call methods, replace text and fonts, hook native methods,
 and run work over multiple frames.
 
-The project implementation is Rust. Android hooks link the official Frida Gum
-native library for ARM, ARM64, x86 and x86_64. BNM is a reference for capabilities
-and ABI research; its code is not bundled.
+Hooks use Frida Gum on Android ARM, ARM64, x86 and x86_64.
 
 ## Start with a translation hook
 
@@ -45,28 +43,28 @@ Build with `cargo ndk -t arm64-v8a build --release`, then load the resulting
 library through Android's `System.loadLibrary`. Choose the ABI of the game's
 native libraries, including when the game runs through an emulator's ARM
 translation layer. The [translation example](examples/translation.rs) is a
-buildable library. This repository's 0.3 API is not yet a published crate.
+buildable library.
 
 ## Everyday operations
 
 ```rust
 use cleat::prelude::*;
-fn example(player: Object) -> Result<()> {
-let hp: i32 = player.get("health")?;
-player.set("health", hp + 100)?;
-player.set("displayName", "御主")?;
-player.call::<()>("Refresh", ())?;
+fn update_player(player: Object) -> Result<()> {
+    let hp: i32 = player.get("health")?;
+    player.set("health", hp + 100)?;
+    player.set("displayName", "Master")?;
+    player.call::<()>("Refresh", ())?;
 
-let game = Class::find_in("Assembly-CSharp", "GameManager")?;
-let manager: Object = game.get("instance")?;
-let _retained = manager.root()?; // keep this root while storing the object
-Ok(())
+    let game = Class::find_in("Assembly-CSharp", "GameManager")?;
+    let manager: Object = game.get("instance")?;
+    manager.call::<()>("Save", ())?;
+    Ok(())
 }
 ```
 
 `get` and `set` accept fields or properties. Calls use argument tuples; overloads
-with the same argument count require explicit parameter types. Failures return
-`Result` rather than silently choosing an overload.
+with the same argument count can be selected by parameter type. See the
+[API guide](docs/en/API.md) for overloads, collections, coroutines and fonts.
 
 ## Capabilities
 
@@ -78,15 +76,9 @@ with the same argument count require explicit parameter types. Failures return
 | Translation/resources | Rust-string inputs, UTF-16 access, text hooks, AssetBundle/font loading |
 | Hooks | Frida Gum replacement, original calls, installation/uninstallation |
 | Coroutines | Rust frame scheduler and existing managed IEnumerator support |
-| Optional Unity internals | Registered classes/fields/methods/interfaces, virtual overrides, Rust IEnumerator and Unity yield phases |
+| Class registration | New classes, fields, methods, interfaces, virtual overrides and Rust IEnumerator |
 
-The [API guide](docs/en/API.md) describes remaining differences from BNM.
-Class registration and native IEnumerator support require exactly one Unity
-feature: `unity-2019-4`, `unity-2020-3` (patch 20+), `unity-2021-3`,
-`unity-2022-3` or `unity-2023-1`. These are internal ABI profiles, not a promise
-that every game build has the same native call patterns. Unity 2023 also needs
-its profile for the changed GC handle ABI. Unity 6 uses `unity-6000` for public
-APIs and GC handles; class injection is not yet available for that version.
+Choose the game's Unity version using the [feature table](docs/en/BUILD.md#unity-version).
 
 ## Runtime requirements
 
@@ -94,15 +86,8 @@ APIs and GC handles; class injection is not yet available for that version.
 Install hooks and load ordinary Rust data there. Use a Unity main-thread callback
 for scene objects, UI, AssetBundles and coroutine startup.
 
-Managed wrappers are unrooted pointers. Keep `GcHandle`/an object's `root()`
-when retaining an object across callbacks or allocations without another managed
-owner. Rooting does not make engine APIs thread-safe. Custom value layouts and
-raw pointers remain the caller's responsibility.
-
-Gum smoke tests have passed on MuMu Android 15 in native x86_64 and ARM64 via
-Houdini, including concurrent calls and 20 uninstall/reinstall cycles. This
-checks the hook backend; version-specific class injection needs separate
-in-game verification.
+Keep `object.root()?` alongside objects stored across callbacks. The root keeps
+the managed object alive until it is dropped. See [object lifetimes](docs/en/API.md#object-lifetimes).
 
 ## Development
 
@@ -113,6 +98,9 @@ cargo clippy -p cleat -p cleat-macros --all-targets --features unity-2022-3 -- -
 cargo ndk -t arm64-v8a build --example injection --features unity-2022-3
 ```
 
-Do not use `--all-features`: Unity profiles are mutually exclusive. The bridge is
-maintained in [crates/il2cpp-bridge-rs](crates/il2cpp-bridge-rs/UPSTREAM.md); builds
-do not depend on an upstream Git branch. See [third-party notices](THIRD_PARTY_NOTICES.md).
+Select one Unity feature per build. See the [build guide](docs/en/BUILD.md) for
+environment setup and offline builds.
+
+## License
+
+MIT. See [third-party notices](THIRD_PARTY_NOTICES.md) for dependencies.

@@ -5,12 +5,9 @@
 - Imported: 2026-10-19
 - Original license: MIT, retained in [LICENSE](LICENSE)
 
-This is an internal, locally maintained crate (`publish = false`). cleat uses a
-workspace path dependency. Building or updating cleat does not fetch a bridge
-Git repository or track an upstream branch.
+This crate is maintained within the cleat workspace as a private path dependency.
 
-The baseline contains the optional IL2CPP export resolution changes previously
-carried in the jhq223 fork. Local changes cover native argument widths, GC
+Local changes cover native argument widths, GC
 handle types, thread attachment ownership, array/string and field handling,
 assembly-scoped lookup, injected metadata, and scalar Unity math layouts.
 The root modification history records user-visible changes.
